@@ -1,0 +1,34 @@
+# --- RUST ---
+# Esclude la cartella target dove cargo mette i binari compilati
+/target/
+# File di lock (opzionale, ma utile se vuoi versioni precise)
+# Cargo.lock
+
+# --- PYTHON ---
+# Esclude le cartelle dei bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Esclude gli ambienti virtuali
+venv/
+.venv/
+env/
+
+# --- ANALISI & DATA ---
+# Esclude file di dati pesanti (comuni in bioinformatica)
+*.fasta
+*.fastq
+*.bam
+*.vcf
+*.sam
+
+# Esclude i grafici generati (per non sporcare il repo)
+*.png
+*.pdf
+*.svg
+
+# --- SISTEMA ---
+.DS_Store
+.vscode/
+.idea/
