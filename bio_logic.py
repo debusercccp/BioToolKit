@@ -1,20 +1,18 @@
 import random
+import collections
 
 # ==========================================
 # --- CAPITOLO 1: STRINGHE E SKEW (OriC) ---
 # ==========================================
 
 def hamming_distance(p: str, q: str) -> int:
-    """Calcola la distanza di Hamming tra due stringhe."""
     return sum(1 for a, b in zip(p, q) if a != b)
 
 def reverse_complement(pattern: str) -> str:
-    """Genera il filamento complementare inverso."""
     complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
     return "".join(complement.get(base, base) for base in reversed(pattern))
 
 def compute_skew(genome: str) -> list:
-    """Calcola il G-C Skew per identificare l'origine di replicazione."""
     skew = [0]
     for base in genome:
         if base == 'G':
@@ -26,7 +24,6 @@ def compute_skew(genome: str) -> list:
     return skew
 
 def neighbors(pattern, d):
-    """Genera ricorsivamente tutti i k-mer con distanza di Hamming <= d."""
     if d == 0: return {pattern}
     if len(pattern) == 1: return {'A', 'C', 'G', 'T'}
     neighborhood = set()
@@ -40,7 +37,6 @@ def neighbors(pattern, d):
     return neighborhood
 
 def frequent_words_with_mismatches_and_rc(text: str, k: int, d: int) -> set:
-    """Trova i k-mer più frequenti considerando mismatch e RC."""
     counts = {}
     for i in range(len(text) - k + 1):
         kmer = text[i:i+k]
@@ -56,7 +52,6 @@ def frequent_words_with_mismatches_and_rc(text: str, k: int, d: int) -> set:
 # ==========================================
 
 def create_profile_with_pseudocounts(motifs: list) -> dict:
-    """Crea matrice di probabilità con Regola di Laplace (+1)."""
     t, k = len(motifs), len(motifs[0])
     profile = {base: [1.0] * k for base in "ACGT"}
     for motif in motifs:
@@ -68,14 +63,12 @@ def create_profile_with_pseudocounts(motifs: list) -> dict:
     return profile
 
 def get_kmer_probability(kmer: str, profile: dict) -> float:
-    """Calcola probabilità di un k-mer dato un profilo."""
     prob = 1.0
     for i, base in enumerate(kmer):
         prob *= profile[base][i]
     return prob
 
 def find_most_probable_kmer(text: str, k: int, profile: dict) -> str:
-    """Trova il k-mer che meglio si adatta al profilo in una sequenza."""
     max_prob, best_kmer = -1.0, text[0:k]
     for i in range(len(text) - k + 1):
         kmer = text[i:i+k]
@@ -85,7 +78,6 @@ def find_most_probable_kmer(text: str, k: int, profile: dict) -> str:
     return best_kmer
 
 def get_score(motifs: list) -> int:
-    """Calcola lo Score (mismatch totali rispetto al consenso)."""
     k = len(motifs[0])
     score = 0
     for i in range(k):
@@ -95,7 +87,6 @@ def get_score(motifs: list) -> int:
     return score
 
 def randomized_motif_search_instance(dna_list: list, k: int, t: int) -> list:
-    """Singola corsa dell'algoritmo Randomized Motif Search."""
     motifs = []
     for seq in dna_list:
         start = random.randint(0, len(seq) - k)
@@ -108,3 +99,65 @@ def randomized_motif_search_instance(dna_list: list, k: int, t: int) -> list:
             best_motifs = motifs
         else:
             return best_motifs
+
+# ==========================================
+# --- CAPITOLO 3: GENOME ASSEMBLY (Grafi) --
+# ==========================================
+
+def build_de_bruijn_from_kmers(patterns: list) -> dict:
+    graph = {}
+    for pattern in patterns:
+        prefix, suffix = pattern[:-1], pattern[1:]
+        if prefix not in graph: graph[prefix] = []
+        graph[prefix].append(suffix)
+    return graph
+
+def build_paired_de_bruijn(paired_kmers: list) -> dict:
+    graph = {}
+    for pair in paired_kmers:
+        u = f"{pair[0][:-1]}|{pair[1][:-1]}"
+        v = f"{pair[0][1:]}|{pair[1][1:]}"
+        if u not in graph: graph[u] = []
+        graph[u].append(v)
+    return graph
+
+def find_eulerian_path(graph: dict) -> list:
+    in_degree = collections.defaultdict(int)
+    out_degree = collections.defaultdict(int)
+    nodes = set(graph.keys())
+    for u in graph:
+        out_degree[u] = len(graph[u])
+        for v in graph[u]:
+            in_degree[v] += 1
+            nodes.add(v)
+    start_node = next(iter(nodes))
+    for node in nodes:
+        if out_degree[node] > in_degree[node]:
+            start_node = node
+            break
+    stack, path = [start_node], []
+    temp_graph = {u: list(v) for u, v in graph.items()}
+    while stack:
+        u = stack[-1]
+        if u in temp_graph and temp_graph[u]:
+            stack.append(temp_graph[u].pop())
+        else:
+            path.append(stack.pop())
+    return path[::-1]
+
+def path_to_genome(path: list) -> str:
+    genome = path[0]
+    for i in range(1, len(path)):
+        genome += path[i][-1]
+    return genome
+
+def paired_path_to_genome(path: list, k: int, d: int) -> str:
+    first_string = path[0].split('|')[0]
+    second_string = path[0].split('|')[1]
+    for i in range(1, len(path)):
+        first_string += path[i].split('|')[0][-1]
+        second_string += path[i].split('|')[1][-1]
+    overlap_len = len(first_string) - (k + d)
+    if first_string[k+d:] == second_string[:overlap_len]:
+        return first_string + second_string[overlap_len:]
+    return "Error: String reconstruction failed (non-matching overlaps)"
