@@ -2,15 +2,16 @@
 bio_logic.py — Core bioinformatics algorithms.
 
 Chapters:
-    1. String / OriC analysis
+    1. String primitives & OriC analysis
     2. Profile-based motif search
     3. Genome assembly via De Bruijn graphs
     4. Protein / mass-spectrometry tools
+    5. Sequence alignment + substitution matrices
+    6. Genome rearrangements
 """
 
 import random
 import collections
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # CHAPTER 1 — String primitives & OriC
@@ -25,17 +26,16 @@ def hamming_distance(p: str, q: str) -> int:
 
 def reverse_complement(pattern: str) -> str:
     """Watson-Crick reverse complement of a DNA string."""
-    complement = str.maketrans("ACGT", "TGCA")
-    return pattern.translate(complement)[::-1]
+    return pattern.translate(str.maketrans("ACGT", "TGCA"))[::-1]
 
 
 def compute_skew(genome: str) -> list[int]:
     """
     Running #G - #C skew along *genome*.
-    Returns a list of length len(genome)+1 (index 0 = 0).
+    Returns a list of length len(genome)+1 (skew[0] = 0).
     """
-    skew = [0]
     delta = {'G': 1, 'C': -1}
+    skew = [0]
     for base in genome:
         skew.append(skew[-1] + delta.get(base, 0))
     return skew
@@ -49,8 +49,7 @@ def neighbors(pattern: str, d: int) -> set[str]:
         return set("ACGT")
     neighborhood: set[str] = set()
     for text in neighbors(pattern[1:], d):
-        diff = hamming_distance(pattern[1:], text)
-        if diff < d:
+        if hamming_distance(pattern[1:], text) < d:
             for base in "ACGT":
                 neighborhood.add(base + text)
         else:
@@ -58,9 +57,7 @@ def neighbors(pattern: str, d: int) -> set[str]:
     return neighborhood
 
 
-def frequent_words_with_mismatches_and_rc(
-    text: str, k: int, d: int
-) -> set[str]:
+def frequent_words_with_mismatches_and_rc(text: str, k: int, d: int) -> set[str]:
     """
     Most frequent k-mers in *text* allowing up to *d* mismatches,
     counting each k-mer and its reverse complement together.
@@ -86,13 +83,12 @@ def create_profile_with_pseudocounts(motifs: list[str]) -> dict[str, list[float]
     Laplace +1 pseudocount profile from a list of equal-length motifs.
     Returns {base: [freq_pos_0, ..., freq_pos_k-1]}.
     """
-    t = len(motifs)
     k = len(motifs[0])
     profile: dict[str, list[float]] = {b: [1.0] * k for b in "ACGT"}
     for motif in motifs:
         for i, base in enumerate(motif):
             profile[base][i] += 1.0
-    denom = t + 4.0
+    denom = len(motifs) + 4.0
     for base in "ACGT":
         profile[base] = [v / denom for v in profile[base]]
     return profile
@@ -106,9 +102,7 @@ def get_kmer_probability(kmer: str, profile: dict[str, list[float]]) -> float:
     return prob
 
 
-def find_most_probable_kmer(
-    text: str, k: int, profile: dict[str, list[float]]
-) -> str:
+def find_most_probable_kmer(text: str, k: int, profile: dict[str, list[float]]) -> str:
     """Profile-most-probable k-mer in *text*."""
     best_prob = -1.0
     best_kmer = text[:k]
@@ -122,7 +116,7 @@ def find_most_probable_kmer(
 
 def get_score(motifs: list[str]) -> int:
     """
-    Score = total mismatches from the plurality consensus.
+    Motif score = total mismatches from the plurality consensus.
     Lower is better.
     """
     k = len(motifs[0])
@@ -133,16 +127,12 @@ def get_score(motifs: list[str]) -> int:
     return score
 
 
-def randomized_motif_search(
-    dna_list: list[str], k: int, iterations: int = 1000
-) -> list[str]:
+def randomized_motif_search(dna_list: list[str], k: int, iterations: int = 1000) -> list[str]:
     """
-    Run randomized motif search *iterations* times and return the best result.
+    Run randomized motif search *iterations* times; return the best result found.
     """
-    t = len(dna_list)
-
     def _single_run() -> list[str]:
-        motifs = [seq[random.randint(0, len(seq) - k) : ][:k] for seq in dna_list]
+        motifs = [seq[random.randint(0, len(seq) - k):][:k] for seq in dna_list]
         best = motifs[:]
         while True:
             profile = create_profile_with_pseudocounts(motifs)
@@ -152,12 +142,12 @@ def randomized_motif_search(
             else:
                 return best
 
-    best_motifs = _single_run()
+    best = _single_run()
     for _ in range(iterations - 1):
         candidate = _single_run()
-        if get_score(candidate) < get_score(best_motifs):
-            best_motifs = candidate
-    return best_motifs
+        if get_score(candidate) < get_score(best):
+            best = candidate
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +158,11 @@ def build_de_bruijn_from_kmers(patterns: list[str]) -> dict[str, list[str]]:
     """De Bruijn graph from a list of k-mers."""
     graph: dict[str, list[str]] = {}
     for p in patterns:
-        prefix, suffix = p[:-1], p[1:]
-        graph.setdefault(prefix, []).append(suffix)
+        graph.setdefault(p[:-1], []).append(p[1:])
     return graph
 
 
-def build_paired_de_bruijn(
-    paired_kmers: list[tuple[str, str]]
-) -> dict[str, list[str]]:
+def build_paired_de_bruijn(paired_kmers: list[tuple[str, str]]) -> dict[str, list[str]]:
     """
     De Bruijn graph for paired-end reads.
     Each element of *paired_kmers* is a (read1, read2) tuple.
@@ -190,41 +177,37 @@ def build_paired_de_bruijn(
 
 def find_eulerian_path(graph: dict[str, list[str]]) -> list[str]:
     """
-    Hierholzer's algorithm for an Eulerian *path* (semi-Eulerian graph).
-    Raises ValueError if no valid start node is found.
+    Hierholzer's algorithm for an Eulerian path in a semi-Eulerian graph.
+    Falls back to any node as start if the graph is Eulerian (circuit case).
     """
     in_deg: dict[str, int] = collections.defaultdict(int)
     out_deg: dict[str, int] = collections.defaultdict(int)
     nodes: set[str] = set(graph)
 
-    for u, neighbors_list in graph.items():
-        out_deg[u] += len(neighbors_list)
-        for v in neighbors_list:
+    for u, adj in graph.items():
+        out_deg[u] += len(adj)
+        for v in adj:
             in_deg[v] += 1
             nodes.add(v)
 
-    # Start from the node with out - in == 1 (Eulerian path start)
     start = next(
         (n for n in nodes if out_deg[n] - in_deg[n] == 1),
-        next(iter(nodes)),  # fallback: any node (Eulerian circuit)
+        next(iter(nodes)),
     )
 
     tmp: dict[str, list[str]] = {u: list(vs) for u, vs in graph.items()}
-    stack = [start]
-    path: list[str] = []
-
+    stack, path = [start], []
     while stack:
         u = stack[-1]
         if tmp.get(u):
             stack.append(tmp[u].pop())
         else:
             path.append(stack.pop())
-
     return path[::-1]
 
 
 def path_to_genome(path: list[str]) -> str:
-    """Reconstruct genome string from a node path in the De Bruijn graph."""
+    """Reconstruct a genome string from a De Bruijn node path."""
     return path[0] + "".join(node[-1] for node in path[1:])
 
 
@@ -235,20 +218,17 @@ def paired_path_to_genome(path: list[str], k: int, d: int) -> str:
     """
     first  = path[0].split("|")[0] + "".join(n.split("|")[0][-1] for n in path[1:])
     second = path[0].split("|")[1] + "".join(n.split("|")[1][-1] for n in path[1:])
-
-    overlap_start = k + d
-    if first[overlap_start:] != second[: len(first) - overlap_start]:
-        raise ValueError(
-            "Paired-end reconstruction failed: overlapping regions do not match."
-        )
-    return first + second[len(first) - overlap_start :]
+    overlap = len(first) - (k + d)
+    if first[k + d:] != second[:overlap]:
+        raise ValueError("Paired-end reconstruction failed: overlapping regions do not match.")
+    return first + second[overlap:]
 
 
 # ---------------------------------------------------------------------------
 # CHAPTER 4 — Protein / mass spectrometry
 # ---------------------------------------------------------------------------
 
-# Integer monoisotopic masses (Da) for the 20 standard amino acids
+# Integer monoisotopic masses (Da) for the 20 standard amino acids.
 MASS_TABLE: dict[str, int] = {
     'G': 57,  'A': 71,  'S': 87,  'P': 97,  'V': 99,
     'T': 101, 'C': 103, 'I': 113, 'L': 113, 'N': 114,
@@ -256,24 +236,24 @@ MASS_TABLE: dict[str, int] = {
     'H': 137, 'F': 147, 'R': 156, 'Y': 163, 'W': 186,
 }
 
-# Unique mass values used during de-novo sequencing
+# Unique residue masses used by the de-novo sequencing algorithm.
 AMINO_ACID_MASSES: list[int] = sorted(set(MASS_TABLE.values()))
 
 
 def get_linear_spectrum(peptide_masses: list[int]) -> list[int]:
-    """Theoretical *linear* spectrum for a peptide given as a list of residue masses."""
+    """Theoretical linear spectrum for a peptide given as a list of residue masses."""
     prefix = [0]
     for m in peptide_masses:
         prefix.append(prefix[-1] + m)
-    spectrum = [0]
-    for i in range(len(prefix)):
-        for j in range(i + 1, len(prefix)):
-            spectrum.append(prefix[j] - prefix[i])
-    return sorted(spectrum)
+    return sorted(
+        prefix[j] - prefix[i]
+        for i in range(len(prefix))
+        for j in range(i + 1, len(prefix))
+    )
 
 
 def get_circular_spectrum(peptide_masses: list[int]) -> list[int]:
-    """Theoretical *circular* (cyclic) spectrum for a peptide."""
+    """Theoretical cyclic spectrum for a peptide given as a list of residue masses."""
     prefix = [0]
     for m in peptide_masses:
         prefix.append(prefix[-1] + m)
@@ -290,9 +270,8 @@ def get_circular_spectrum(peptide_masses: list[int]) -> list[int]:
 
 def _is_consistent(peptide_masses: list[int], experimental_spectrum: list[int]) -> bool:
     """True if the linear spectrum of *peptide_masses* is a sub-multiset of *experimental_spectrum*."""
-    linear = get_linear_spectrum(peptide_masses)
     remaining = list(experimental_spectrum)
-    for mass in linear:
+    for mass in get_linear_spectrum(peptide_masses):
         try:
             remaining.remove(mass)
         except ValueError:
@@ -310,21 +289,286 @@ def cyclopeptide_sequencing(experimental_spectrum: list[int]) -> list[list[int]]
     results: list[list[int]] = []
 
     while candidates:
-        # Branch: extend each candidate by one amino acid
         candidates = [c + [m] for c in candidates for m in AMINO_ACID_MASSES]
-
         survivors: list[list[int]] = []
         for peptide in candidates:
             current_mass = sum(peptide)
             if current_mass == parent_mass:
                 if get_circular_spectrum(peptide) == experimental_spectrum:
                     results.append(peptide)
-                # Do NOT keep: already at parent mass, no further extension useful
             elif current_mass < parent_mass:
                 if _is_consistent(peptide, experimental_spectrum):
                     survivors.append(peptide)
-            # current_mass > parent_mass → pruned (not added to survivors)
-
         candidates = survivors
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# CHAPTER 5 — Sequence alignment + substitution matrices
+# ---------------------------------------------------------------------------
+
+# Type alias: maps residue pairs to integer log-odds scores.
+SubMatrix = dict[tuple[str, str], int]
+
+# ---- BLOSUM62 --------------------------------------------------------------
+_BLOSUM62_RAW: list[tuple] = [
+    #      A   R   N   D   C   Q   E   G   H   I   L   K   M   F   P   S   T   W   Y   V
+    ("A",  4, -1, -2, -2,  0, -1, -1,  0, -2, -1, -1, -1, -1, -2, -1,  1,  0, -3, -2,  0),
+    ("R", -1,  5,  0, -2, -3,  1,  0, -2,  0, -3, -2,  2, -1, -3, -2, -1, -1, -3, -2, -3),
+    ("N", -2,  0,  6,  1, -3,  0,  0,  0,  1, -3, -3,  0, -2, -3, -2,  1,  0, -4, -2, -3),
+    ("D", -2, -2,  1,  6, -3,  0,  2, -1, -1, -3, -4, -1, -3, -3, -1,  0, -1, -4, -3, -3),
+    ("C",  0, -3, -3, -3,  9, -3, -4, -3, -3, -1, -1, -3, -1, -2, -3, -1, -1, -2, -2, -1),
+    ("Q", -1,  1,  0,  0, -3,  5,  2, -2,  0, -3, -2,  1,  0, -3, -1,  0, -1, -2, -1, -2),
+    ("E", -1,  0,  0,  2, -4,  2,  5, -2,  0, -3, -3,  1, -2, -3, -1,  0, -1, -3, -2, -2),
+    ("G",  0, -2,  0, -1, -3, -2, -2,  6, -2, -4, -4, -2, -3, -3, -2,  0, -2, -2, -3, -3),
+    ("H", -2,  0,  1, -1, -3,  0,  0, -2,  8, -3, -3, -1, -2, -1, -2, -1, -2, -2,  2, -3),
+    ("I", -1, -3, -3, -3, -1, -3, -3, -4, -3,  4,  2, -3,  1,  0, -3, -2, -1, -3, -1,  3),
+    ("L", -1, -2, -3, -4, -1, -2, -3, -4, -3,  2,  4, -2,  2,  0, -3, -2, -1, -2, -1,  1),
+    ("K", -1,  2,  0, -1, -3,  1,  1, -2, -1, -3, -2,  5, -1, -3, -1,  0, -1, -3, -2, -2),
+    ("M", -1, -1, -2, -3, -1,  0, -2, -3, -2,  1,  2, -1,  5,  0, -2, -1, -1, -1, -1,  1),
+    ("F", -2, -3, -3, -3, -2, -3, -3, -3, -1,  0,  0, -3,  0,  6, -4, -2, -2,  1,  3, -1),
+    ("P", -1, -2, -2, -1, -3, -1, -1, -2, -2, -3, -3, -1, -2, -4,  7, -1, -1, -4, -3, -2),
+    ("S",  1, -1,  1,  0, -1,  0,  0,  0, -1, -2, -2,  0, -1, -2, -1,  4,  1, -3, -2, -2),
+    ("T",  0, -1,  0, -1, -1, -1, -1, -2, -2, -1, -1, -1, -1, -2, -1,  1,  5, -2, -2,  0),
+    ("W", -3, -3, -4, -4, -2, -2, -3, -2, -2, -3, -2, -3, -1,  1, -4, -3, -2, 11,  2, -3),
+    ("Y", -2, -2, -2, -3, -2, -1, -2, -3,  2, -1, -1, -2, -1,  3, -3, -2, -2,  2,  7, -1),
+    ("V",  0, -3, -3, -3, -1, -2, -2, -3, -3,  3,  1, -2,  1, -1, -2, -2,  0, -3, -1,  4),
+]
+
+# ---- PAM250 ----------------------------------------------------------------
+_PAM250_RAW: list[tuple] = [
+    #      A   R   N   D   C   Q   E   G   H   I   L   K   M   F   P   S   T   W   Y   V
+    ("A",  2, -2,  0,  0, -2,  0,  0,  1, -1, -1, -2, -1, -1, -3,  1,  1,  1, -6, -3,  0),
+    ("R", -2,  6,  0, -1, -4,  1, -1, -3,  2, -2, -3,  3,  0, -4,  0,  0, -1,  2, -4, -2),
+    ("N",  0,  0,  2,  2, -4,  1,  1,  0,  2, -2, -3,  1, -2, -3,  0,  1,  0, -4, -2, -2),
+    ("D",  0, -1,  2,  4, -5,  2,  3,  1,  1, -2, -4,  0, -3, -6, -1,  0,  0, -7, -4, -2),
+    ("C", -2, -4, -4, -5, 12, -5, -5, -3, -3, -2, -6, -5, -5, -4, -3,  0, -2, -8,  0, -2),
+    ("Q",  0,  1,  1,  2, -5,  4,  2, -1,  3, -2, -2,  1, -1, -5,  0, -1, -1, -5, -4, -2),
+    ("E",  0, -1,  1,  3, -5,  2,  4,  0,  1, -2, -3,  0, -2, -5, -1,  0,  0, -7, -4, -2),
+    ("G",  1, -3,  0,  1, -3, -1,  0,  5, -2, -3, -4, -2, -3, -5,  0,  1,  0, -7, -5, -1),
+    ("H", -1,  2,  2,  1, -3,  3,  1, -2,  6, -2, -2,  0, -2, -2,  0, -1, -1, -3,  0, -2),
+    ("I", -1, -2, -2, -2, -2, -2, -2, -3, -2,  5,  2, -2,  2,  1, -2, -1,  0, -5, -1,  4),
+    ("L", -2, -3, -3, -4, -6, -2, -3, -4, -2,  2,  6, -3,  4,  2, -3, -3, -2, -2, -1,  2),
+    ("K", -1,  3,  1,  0, -5,  1,  0, -2,  0, -2, -3,  5,  0, -5, -1,  0,  0, -3, -4, -2),
+    ("M", -1,  0, -2, -3, -5, -1, -2, -3, -2,  2,  4,  0,  6,  0, -2, -2, -1, -4, -2,  2),
+    ("F", -3, -4, -3, -6, -4, -5, -5, -5, -2,  1,  2, -5,  0,  9, -5, -3, -3,  0,  7, -1),
+    ("P",  1,  0,  0, -1, -3,  0, -1,  0,  0, -2, -3, -1, -2, -5,  6,  1,  0, -6, -5, -1),
+    ("S",  1,  0,  1,  0,  0, -1,  0,  1, -1, -1, -3,  0, -2, -3,  1,  2,  1, -2, -3, -1),
+    ("T",  1, -1,  0,  0, -2, -1,  0,  0, -1,  0, -2,  0, -1, -3,  0,  1,  3, -5, -3,  0),
+    ("W", -6,  2, -4, -7, -8, -5, -7, -7, -3, -5, -2, -3, -4,  0, -6, -2, -5, 17,  0, -6),
+    ("Y", -3, -4, -2, -4,  0, -4, -4, -5,  0, -1, -1, -4, -2,  7, -5, -3, -3,  0, 10, -2),
+    ("V",  0, -2, -2, -2, -2, -2, -2, -1, -2,  4,  2, -2,  2, -1, -1, -1,  0, -6, -2,  4),
+]
+
+_AA_ORDER: list[str] = [row[0] for row in _BLOSUM62_RAW]
+
+
+def _build_matrix(raw: list[tuple]) -> SubMatrix:
+    """Expand a triangular raw matrix into a full symmetric (aa1, aa2) -> score dict."""
+    order = [row[0] for row in raw]
+    m: SubMatrix = {}
+    for i, row in enumerate(raw):
+        for j, score in enumerate(row[1:]):
+            m[(order[i], order[j])] = score
+            m[(order[j], order[i])] = score
+    return m
+
+
+BLOSUM62: SubMatrix = _build_matrix(_BLOSUM62_RAW)
+PAM250:   SubMatrix = _build_matrix(_PAM250_RAW)
+IDENTITY: SubMatrix = {
+    (a, b): (1 if a == b else -1)
+    for a in (*"ACGT", *_AA_ORDER)
+    for b in (*"ACGT", *_AA_ORDER)
+}
+
+SUBSTITUTION_MATRICES: dict[str, SubMatrix] = {
+    "BLOSUM62": BLOSUM62,
+    "PAM250":   PAM250,
+    "IDENTITY": IDENTITY,
+}
+
+
+def _sub(matrix: SubMatrix | None, a: str, b: str, match: int, mismatch: int) -> int:
+    """Substitution score for residues *a* and *b* under *matrix* (or flat scores)."""
+    if matrix is not None:
+        return matrix.get((a, b), mismatch)
+    return match if a == b else mismatch
+
+
+def _traceback_global(
+    dp: list[list[int]],
+    s1: str, s2: str,
+    matrix: SubMatrix | None,
+    match: int, mismatch: int, gap: int,
+) -> tuple[str, str]:
+    """Traceback for Needleman-Wunsch."""
+    a1: list[str] = []
+    a2: list[str] = []
+    i, j = len(s1), len(s2)
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and dp[i][j] == dp[i-1][j-1] + _sub(matrix, s1[i-1], s2[j-1], match, mismatch):
+            a1.append(s1[i-1]); a2.append(s2[j-1]); i -= 1; j -= 1
+        elif i > 0 and dp[i][j] == dp[i-1][j] + gap:
+            a1.append(s1[i-1]); a2.append("-"); i -= 1
+        else:
+            a1.append("-"); a2.append(s2[j-1]); j -= 1
+    return "".join(reversed(a1)), "".join(reversed(a2))
+
+
+def _traceback_local(
+    dp: list[list[int]],
+    s1: str, s2: str,
+    best_pos: tuple[int, int],
+    matrix: SubMatrix | None,
+    match: int, mismatch: int, gap: int,
+) -> tuple[str, str]:
+    """Traceback for Smith-Waterman."""
+    a1: list[str] = []
+    a2: list[str] = []
+    i, j = best_pos
+    while i > 0 and j > 0 and dp[i][j] > 0:
+        if dp[i][j] == dp[i-1][j-1] + _sub(matrix, s1[i-1], s2[j-1], match, mismatch):
+            a1.append(s1[i-1]); a2.append(s2[j-1]); i -= 1; j -= 1
+        elif dp[i][j] == dp[i-1][j] + gap:
+            a1.append(s1[i-1]); a2.append("-"); i -= 1
+        else:
+            a1.append("-"); a2.append(s2[j-1]); j -= 1
+    return "".join(reversed(a1)), "".join(reversed(a2))
+
+
+def global_alignment(
+    s1: str,
+    s2: str,
+    matrix: SubMatrix | None = None,
+    match: int = 1,
+    mismatch: int = -1,
+    gap: int = -2,
+) -> tuple[str, str, int]:
+    """
+    Needleman-Wunsch global alignment.
+
+    Args:
+        s1, s2:   sequences to align.
+        matrix:   substitution matrix (BLOSUM62, PAM250, IDENTITY, or None).
+                  When None, flat *match* / *mismatch* scores are used.
+        gap:      linear gap penalty (negative integer).
+
+    Returns:
+        (aligned_s1, aligned_s2, score)
+    """
+    m, n = len(s1), len(s2)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m + 1):
+        dp[i][0] = i * gap
+    for j in range(n + 1):
+        dp[0][j] = j * gap
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            diag = dp[i-1][j-1] + _sub(matrix, s1[i-1], s2[j-1], match, mismatch)
+            dp[i][j] = max(diag, dp[i-1][j] + gap, dp[i][j-1] + gap)
+    a1, a2 = _traceback_global(dp, s1, s2, matrix, match, mismatch, gap)
+    return a1, a2, dp[m][n]
+
+
+def local_alignment(
+    s1: str,
+    s2: str,
+    matrix: SubMatrix | None = None,
+    match: int = 1,
+    mismatch: int = -1,
+    gap: int = -2,
+) -> tuple[str, str, int]:
+    """
+    Smith-Waterman local alignment.
+
+    Args:
+        s1, s2:   sequences to align.
+        matrix:   substitution matrix (BLOSUM62, PAM250, IDENTITY, or None).
+        gap:      linear gap penalty (negative integer).
+
+    Returns:
+        (aligned_s1, aligned_s2, score)
+    """
+    m, n = len(s1), len(s2)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    best_score = 0
+    best_pos = (0, 0)
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            diag = dp[i-1][j-1] + _sub(matrix, s1[i-1], s2[j-1], match, mismatch)
+            dp[i][j] = max(0, diag, dp[i-1][j] + gap, dp[i][j-1] + gap)
+            if dp[i][j] >= best_score:
+                best_score = dp[i][j]
+                best_pos = (i, j)
+    a1, a2 = _traceback_local(dp, s1, s2, best_pos, matrix, match, mismatch, gap)
+    return a1, a2, best_score
+
+
+# ---------------------------------------------------------------------------
+# CHAPTER 6 — Genome rearrangements
+# ---------------------------------------------------------------------------
+
+def _validate_signed_permutation(p: list[int]) -> None:
+    """
+    Raise ValueError if *p* is not a valid signed permutation.
+    A valid signed permutation of length n contains each of +/-1 ... +/-n exactly once.
+    """
+    if not p:
+        raise ValueError("Permutation cannot be empty.")
+    n = len(p)
+    if sorted(abs(x) for x in p) != list(range(1, n + 1)):
+        raise ValueError(
+            f"Not a valid signed permutation of length {n}: "
+            f"expected each of {{+/-1 ... +/-{n}}} exactly once, got {p}."
+        )
+
+
+def greedy_sorting(p: list[int]) -> list[list[int]]:
+    """
+    Greedy sorting by reversals (approximation algorithm).
+
+    Sorts a signed permutation to the identity (+1, +2, ..., +n) by greedily
+    bringing each target element into position via a reversal, then fixing its
+    sign with a second reversal if needed.
+
+    Returns the list of intermediate permutations (one per reversal applied),
+    not including the initial state.
+
+    Raises ValueError for invalid input.
+    """
+    _validate_signed_permutation(p)
+    p = list(p)
+    steps: list[list[int]] = []
+
+    for i in range(len(p)):
+        target = i + 1
+        try:
+            idx = next(j for j in range(i, len(p)) if abs(p[j]) == target)
+        except StopIteration:
+            raise ValueError(
+                f"Element +/-{target} not found at or after position {i} -- malformed permutation."
+            )
+        if idx != i or p[i] != target:
+            p[i : idx + 1] = [-x for x in reversed(p[i : idx + 1])]
+            steps.append(list(p))
+        if p[i] == -target:
+            p[i] = target
+            steps.append(list(p))
+
+    return steps
+
+
+def count_breakpoints(p: list[int]) -> int:
+    """
+    Count breakpoints in signed permutation *p*.
+
+    A breakpoint is any adjacent pair in (0, p[0], ..., p[n-1], n+1)
+    where consecutive elements do not differ by exactly +1.
+
+    Raises ValueError for invalid input.
+    """
+    _validate_signed_permutation(p)
+    extended = [0, *p, len(p) + 1]
+    return sum(extended[i + 1] - extended[i] != 1 for i in range(len(extended) - 1))

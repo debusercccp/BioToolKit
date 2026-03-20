@@ -95,51 +95,103 @@ def run_cap2() -> None:
         print(f"  {m}")
 
 
-def run_cap3_standard() -> None:
-    """Standard genome assembly from k-mers."""
-    print("\n--- [CAP 3.1] STANDARD ASSEMBLY ---")
-    print("Enter k-mers (empty line to stop):")
-    kmers: list[str] = []
-    while True:
-        line = input().strip().upper()
-        if not line:
-            break
-        kmers.append(line)
-    if not kmers:
-        print("No k-mers provided.")
+def run_cap3() -> None:
+    """Genome assembly via De Bruijn graphs."""
+    print("\n--- [CAP 3] GENOME ASSEMBLY ---")
+    print("  1) Standard assembly (k-mers)")
+    print("  2) Paired-end assembly")
+    sub = input("Choice: ").strip()
+
+    if sub == "1":
+        print("Enter k-mers (empty line to stop):")
+        kmers: list[str] = []
+        while True:
+            line = input().strip().upper()
+            if not line:
+                break
+            kmers.append(line)
+        if not kmers:
+            raise ValueError("No k-mers provided.")
+        graph = bio.build_de_bruijn_from_kmers(kmers)
+        path = bio.find_eulerian_path(graph)
+        print(f"Assembled genome: {bio.path_to_genome(path)}")
+
+    elif sub == "2":
+        k = _read_int("k-mer length", 3)
+        d = _read_int("Gap distance d", 1)
+        print("Enter pairs in format  read1|read2  (empty line to stop):")
+        pairs: list[tuple[str, str]] = []
+        while True:
+            line = input().strip().upper()
+            if not line:
+                break
+            if "|" not in line:
+                print("  Skipping (no '|' separator).")
+                continue
+            r1, r2 = line.split("|", 1)
+            pairs.append((r1, r2))
+        if not pairs:
+            raise ValueError("No pairs provided.")
+        graph = bio.build_paired_de_bruijn(pairs)
+        path = bio.find_eulerian_path(graph)
+        print(f"Assembled genome: {bio.paired_path_to_genome(path, k, d)}")
+
+    else:
+        print("Invalid choice.")
+
+
+def run_cap5() -> None:
+    """Sequence alignment: global (Needleman-Wunsch) or local (Smith-Waterman)."""
+    print("\n--- [CAP 5] SEQUENCE ALIGNMENT ---")
+    s1 = input("Sequence 1: ").strip().upper()
+    s2 = input("Sequence 2: ").strip().upper()
+    if not s1 or not s2:
+        print("Empty sequence.")
         return
 
-    graph = bio.build_de_bruijn_from_kmers(kmers)
-    path = bio.find_eulerian_path(graph)
-    result = bio.path_to_genome(path)
-    print(f"Assembled genome: {result}")
-
-
-def run_cap3_paired() -> None:
-    """Paired-end genome assembly."""
-    print("\n--- [CAP 3.2] PAIRED-END ASSEMBLY ---")
-    k = _read_int("k-mer length", 3)
-    d = _read_int("Gap distance d", 1)
-
-    print("Enter pairs in format  read1|read2  (empty line to stop):")
-    pairs: list[tuple[str, str]] = []
-    while True:
-        line = input().strip().upper()
-        if not line:
-            break
-        if "|" not in line:
-            print("  Skipping (no '|' separator).")
-            continue
-        r1, r2 = line.split("|", 1)
-        pairs.append((r1, r2))
-    if not pairs:
-        print("No pairs provided.")
+    print("  1) Global alignment (Needleman-Wunsch)")
+    print("  2) Local alignment  (Smith-Waterman)")
+    mode = input("Choice: ").strip()
+    if mode not in ("1", "2"):
+        print("Invalid choice.")
         return
 
-    graph = bio.build_paired_de_bruijn(pairs)
-    path = bio.find_eulerian_path(graph)
-    result = bio.paired_path_to_genome(path, k, d)
-    print(f"Assembled genome: {result}")
+    print("\n  Substitution matrix:")
+    matrix_names = list(bio.SUBSTITUTION_MATRICES.keys())
+    for i, name in enumerate(matrix_names, 1):
+        print(f"  {i}) {name}")
+    print(f"  {len(matrix_names)+1}) None (flat match/mismatch scores)")
+    mat_choice = input("Choice: ").strip()
+
+    matrix = None
+    matrix_label = "IDENTITY (flat)"
+    gap = -2
+    try:
+        idx = int(mat_choice) - 1
+        if 0 <= idx < len(matrix_names):
+            matrix_label = matrix_names[idx]
+            matrix = bio.SUBSTITUTION_MATRICES[matrix_label]
+            gap = -4   # more sensible default for PAM/BLOSUM
+    except ValueError:
+        pass
+
+    if matrix is not None:
+        raw_gap = input(f"Gap penalty (default {gap}): ").strip()
+        if raw_gap:
+            gap = int(raw_gap)
+
+    fn = bio.global_alignment if mode == "1" else bio.local_alignment
+    label = "GLOBAL" if mode == "1" else "LOCAL"
+    a1, a2, score = fn(s1, s2, matrix=matrix, gap=gap)
+
+    mid = "".join(
+        "|" if a1[k] == a2[k] and a1[k] != "-" else " "
+        for k in range(len(a1))
+    )
+    print(f"\nOptimal {label} alignment  [matrix={matrix_label}  gap={gap}]  score={score}")
+    print(f"  S1: {a1}")
+    print(f"      {mid}")
+    print(f"  S2: {a2}")
 
 
 def run_cap4() -> None:
@@ -192,12 +244,59 @@ def run_cap4() -> None:
 # Menu
 # ---------------------------------------------------------------------------
 
+def run_cap6() -> None:
+    """Genome rearrangements: greedy sorting by reversals + breakpoint count."""
+    print("\n--- [CAP 6] GENOME REARRANGEMENTS ---")
+    print("  1) Greedy sorting by reversals")
+    print("  2) Count breakpoints")
+    sub = input("Choice: ").strip()
+    if sub not in ("1", "2"):
+        print("Invalid choice.")
+        return
+
+    print("Enter signed permutation (e.g.  +1 -3 +2  or  1 -3 2):")
+    raw = input().strip()
+    if not raw:
+        print("Empty input.")
+        return
+
+    # Parse tokens: accept +n, -n, n
+    tokens = raw.replace(",", " ").split()
+    try:
+        perm = [int(t) for t in tokens]
+    except ValueError as err:
+        raise ValueError(f"Could not parse permutation: {err}") from err
+
+    if sub == "1":
+        steps = bio.greedy_sorting(perm)
+        n_reversals = len(steps)
+        print(f"\nApproximate reversal distance: {n_reversals}")
+        if steps:
+            show = input("Show intermediate steps? [y/N]: ").strip().lower()
+            if show == "y":
+                print(f"  {'(':>3}  {_fmt_perm(perm)}  ← initial")
+                for k, step in enumerate(steps, 1):
+                    print(f"  {k:>3}  {_fmt_perm(step)}")
+
+    elif sub == "2":
+        bp = bio.count_breakpoints(perm)
+        n = len(perm)
+        print(f"\nBreakpoints: {bp}  (out of {n + 1} possible adjacent pairs)")
+        print(f"Lower bound on reversal distance ≥ {bp // 2}")
+
+
+def _fmt_perm(p: list[int]) -> str:
+    """Format a signed permutation as  (+1 -3 +2)."""
+    return "(" + " ".join(f"+{x}" if x > 0 else str(x) for x in p) + ")"
+
+
 MENU = {
-    "1": ("Origin Search     (Cap 1)", run_cap1),
-    "2": ("Motif Search      (Cap 2)", run_cap2),
-    "3": ("Standard Assembly (Cap 3.1)", run_cap3_standard),
-    "4": ("Paired-End Asm    (Cap 3.2)", run_cap3_paired),
-    "5": ("Protein Tools     (Cap 4)", run_cap4),
+    "1": ("Origin Search      (Cap 1)",   run_cap1),
+    "2": ("Motif Search       (Cap 2)",   run_cap2),
+    "3": ("Genome Assembly    (Cap 3)",   run_cap3),
+    "4": ("Protein Tools      (Cap 4)",   run_cap4),
+    "5": ("Sequence Alignment (Cap 5)",   run_cap5),
+    "6": ("Genome Rearrangements (Cap 6)", run_cap6),
 }
 
 
