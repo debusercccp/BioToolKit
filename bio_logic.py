@@ -572,3 +572,368 @@ def count_breakpoints(p: list[int]) -> int:
     _validate_signed_permutation(p)
     extended = [0, *p, len(p) + 1]
     return sum(extended[i + 1] - extended[i] != 1 for i in range(len(extended) - 1))
+
+
+# ---------------------------------------------------------------------------
+# CHAPTER 7 — Molecular evolution (phylogenetics)
+# ---------------------------------------------------------------------------
+#
+# Algorithms covered:
+#   - UPGMA          (distance-based, ultrametric tree)
+#   - Neighbor Joining (distance-based, unrooted additive tree)
+#   - Small Parsimony  (Sankoff / Fitch on a fixed unrooted tree)
+#
+# Internal tree representation
+# ----------------------------
+# An unrooted tree is stored as a dict[int, dict[int, float]]:
+#   adj[u][v] = branch_length_u_to_v
+# Leaves are labelled 0 … n-1; internal nodes start at n.
+# ---------------------------------------------------------------------------
+
+import numpy as np
+
+# Type alias used throughout this chapter.
+Tree = dict[int, dict[int, float]]
+
+
+# ---- helpers ---------------------------------------------------------------
+
+def _tree_add_edge(tree: Tree, u: int, v: int, w: float) -> None:
+    tree.setdefault(u, {})[v] = w
+    tree.setdefault(v, {})[u] = w
+
+
+def _tree_remove_edge(tree: Tree, u: int, v: int) -> None:
+    tree[u].pop(v, None)
+    tree[v].pop(u, None)
+
+
+def _newick(tree: Tree, node: int, parent: int | None, labels: list[str]) -> str:
+    """Recursive Newick serialisation (works for rooted & unrooted)."""
+    n_leaves = len(labels)
+    children = [v for v in tree[node] if v != parent]
+    if not children:
+        return labels[node] if node < n_leaves else f"n{node}"
+    parts = []
+    for c in children:
+        w = tree[node][c]
+        parts.append(f"{_newick(tree, c, node, labels)}:{w:.4f}")
+    name = labels[node] if node < n_leaves else f"n{node}"
+    return f"({','.join(parts)}){name}"
+
+
+# ---- UPGMA -----------------------------------------------------------------
+
+def upgma(
+    distance_matrix: list[list[float]],
+    labels: list[str],
+) -> tuple[Tree, list[tuple[int, int, float]]]:
+    """
+    UPGMA (Unweighted Pair Group Method with Arithmetic mean).
+
+    Builds a rooted ultrametric tree from a symmetric distance matrix.
+
+    Args:
+        distance_matrix: n×n symmetric matrix (list of lists or 2-D array).
+        labels:          sequence labels, length n.
+
+    Returns:
+        (tree, edges) where
+          tree  — adjacency dict {node: {neighbour: branch_length}}
+          edges — list of (parent, child, branch_length) tuples
+    """
+    n = len(labels)
+    if len(distance_matrix) != n or any(len(r) != n for r in distance_matrix):
+        raise ValueError("distance_matrix dimensions must match len(labels).")
+
+    mat = np.array(distance_matrix, dtype=float)
+    np.fill_diagonal(mat, np.inf)   # ignore self-distances
+
+    cluster_size = {i: 1 for i in range(n)}
+    node_height  = {i: 0.0 for i in range(n)}
+    active       = list(range(n))
+    tree: Tree   = {i: {} for i in range(n)}
+    edges: list[tuple[int, int, float]] = []
+    next_node    = n
+
+    # index_of[active[k]] = row/col k in the current submatrix
+    # We track active node ids; mat rows/cols correspond to active list positions.
+
+    while len(active) > 1:
+        # Find minimum off-diagonal entry
+        size = len(active)
+        sub = mat[:size, :size]
+        flat_idx = int(np.argmin(sub))
+        ri, ci = divmod(flat_idx, size)
+        if ri > ci:
+            ri, ci = ci, ri
+
+        u, v = active[ri], active[ci]
+        min_dist = mat[ri, ci]
+
+        # New internal node
+        new = next_node
+        next_node += 1
+        node_height[new] = min_dist / 2.0
+        tree[new] = {}
+
+        branch_u = node_height[new] - node_height[u]
+        branch_v = node_height[new] - node_height[v]
+        _tree_add_edge(tree, new, u, branch_u)
+        _tree_add_edge(tree, new, v, branch_v)
+        edges.append((new, u, branch_u))
+        edges.append((new, v, branch_v))
+
+        # Compute new distances (weighted average)
+        su, sv = cluster_size[u], cluster_size[v]
+        new_dists = np.array([
+            (mat[ri, k] * su + mat[ci, k] * sv) / (su + sv)
+            for k in range(size)
+        ])
+
+        # Shrink matrix: delete rows/cols for ri and ci, append new cluster
+        keep = [k for k in range(size) if k not in (ri, ci)]
+        mat = mat[np.ix_(keep, keep)]
+        new_row = new_dists[keep]
+        s = mat.shape[0]
+        new_mat = np.empty((s + 1, s + 1))
+        new_mat[:s, :s] = mat
+        new_mat[s, :s]  = new_row
+        new_mat[:s, s]  = new_row
+        new_mat[s, s]   = np.inf
+        mat = new_mat
+
+        cluster_size[new] = su + sv
+        node_height[new]  = min_dist / 2.0
+
+        # Update active list
+        active = [active[k] for k in keep]
+        active.append(new)
+
+    return tree, edges
+
+
+# ---- Neighbor Joining ------------------------------------------------------
+
+def neighbor_joining(
+    distance_matrix: list[list[float]],
+    labels: list[str],
+) -> tuple[Tree, list[tuple[int, int, float]]]:
+    """
+    Neighbor Joining (Saitou & Nei, 1987).
+
+    Builds an unrooted additive tree from a symmetric distance matrix.
+
+    Args:
+        distance_matrix: n×n symmetric distance matrix.
+        labels:          sequence labels, length n.
+
+    Returns:
+        (tree, edges) where
+          tree  — adjacency dict {node: {neighbour: branch_length}}
+          edges — list of (u, v, branch_length) tuples (undirected)
+    """
+    n = len(labels)
+    if len(distance_matrix) != n or any(len(r) != n for r in distance_matrix):
+        raise ValueError("distance_matrix dimensions must match len(labels).")
+
+    mat = np.array(distance_matrix, dtype=float)
+    active = list(range(n))
+    tree: Tree = {i: {} for i in range(n)}
+    edges: list[tuple[int, int, float]] = []
+    next_node = n
+
+    while len(active) > 2:
+        size = len(active)
+
+        # Compute the Q-matrix
+        row_sums = mat[:size, :size].sum(axis=1)
+        Q = np.full((size, size), np.inf)
+        for i in range(size):
+            for j in range(i + 1, size):
+                Q[i, j] = (size - 2) * mat[i, j] - row_sums[i] - row_sums[j]
+                Q[j, i] = Q[i, j]
+
+        # Find minimum Q entry
+        flat_idx = int(np.argmin(Q))
+        ri, ci = divmod(flat_idx, size)
+        if ri > ci:
+            ri, ci = ci, ri
+
+        u, v = active[ri], active[ci]
+        d_uv = mat[ri, ci]
+
+        # Branch lengths from new node to u and v
+        if size > 2:
+            delta = (row_sums[ri] - row_sums[ci]) / (size - 2)
+        else:
+            delta = 0.0
+        branch_u = (d_uv + delta) / 2.0
+        branch_v = d_uv - branch_u
+
+        # New internal node
+        new = next_node
+        next_node += 1
+        tree[new] = {}
+        _tree_add_edge(tree, new, u, branch_u)
+        _tree_add_edge(tree, new, v, branch_v)
+        edges.append((new, u, branch_u))
+        edges.append((new, v, branch_v))
+
+        # Compute distances from new node to remaining nodes
+        new_dists = np.array([
+            (mat[ri, k] + mat[ci, k] - d_uv) / 2.0
+            for k in range(size)
+        ])
+
+        # Shrink matrix
+        keep = [k for k in range(size) if k not in (ri, ci)]
+        mat = mat[np.ix_(keep, keep)]
+        new_row = new_dists[keep]
+        s = mat.shape[0]
+        new_mat = np.zeros((s + 1, s + 1))
+        new_mat[:s, :s] = mat
+        new_mat[s, :s]  = new_row
+        new_mat[:s, s]  = new_row
+        mat = new_mat
+
+        active = [active[k] for k in keep]
+        active.append(new)
+
+    # Connect the last two nodes
+    if len(active) == 2:
+        u, v = active[0], active[1]
+        w = float(mat[0, 1])
+        _tree_add_edge(tree, u, v, w)
+        edges.append((u, v, w))
+
+    return tree, edges
+
+
+# ---- Small Parsimony (Fitch / Sankoff) ------------------------------------
+
+def small_parsimony(
+    tree: Tree,
+    leaf_chars: dict[int, str],
+    alphabet: str = "ACGT",
+) -> tuple[int, dict[int, str]]:
+    """
+    Small Parsimony on a fixed unrooted binary tree (Fitch algorithm).
+
+    Works by temporarily rooting at an arbitrary internal node, running the
+    two-pass Fitch algorithm, then un-rooting.
+
+    Args:
+        tree:       adjacency dict from upgma() or neighbor_joining().
+        leaf_chars: {leaf_node: character} for each leaf (single site).
+        alphabet:   characters to consider (default "ACGT").
+
+    Returns:
+        (parsimony_score, node_assignments) where
+          parsimony_score  — minimum number of substitutions
+          node_assignments — {node: character} for every node
+    """
+    if not tree:
+        raise ValueError("Tree is empty.")
+
+    leaves = set(leaf_chars)
+    internal = [v for v in tree if v not in leaves]
+    if not internal:
+        raise ValueError("Tree has no internal nodes.")
+
+    # Root at the first internal node found
+    root = internal[0]
+
+    # Build a parent map via BFS from root (treats tree as directed)
+    parent: dict[int, int | None] = {root: None}
+    order: list[int] = []
+    queue = collections.deque([root])
+    while queue:
+        node = queue.popleft()
+        order.append(node)
+        for nb in tree[node]:
+            if nb not in parent:
+                parent[nb] = node
+                queue.append(nb)
+
+    # ----- Downward pass (leaves → root): compute Fitch sets -----
+    fitch: dict[int, set[str]] = {}
+
+    score = 0
+    for node in reversed(order):
+        if node in leaves:
+            fitch[node] = {leaf_chars[node]}
+            continue
+        children = [nb for nb in tree[node] if nb != parent[node]]
+        if not children:
+            fitch[node] = set(alphabet)
+            continue
+        child_sets = [fitch[c] for c in children]
+        intersection = child_sets[0].intersection(*child_sets[1:])
+        if intersection:
+            fitch[node] = intersection
+        else:
+            fitch[node] = child_sets[0].union(*child_sets[1:])
+            score += 1
+
+    # ----- Upward pass (root → leaves): assign characters -----
+    assignment: dict[int, str] = {}
+
+    for node in order:
+        if node in leaves:
+            assignment[node] = leaf_chars[node]
+            continue
+        par = parent[node]
+        candidates = fitch[node]
+        if par is None:
+            # Root: pick any candidate
+            assignment[node] = min(candidates)
+        else:
+            par_char = assignment[par]
+            assignment[node] = par_char if par_char in candidates else min(candidates)
+
+    return score, assignment
+
+
+def parsimony_score(
+    tree: Tree,
+    leaf_sequences: dict[int, str],
+    alphabet: str = "ACGT",
+) -> tuple[int, dict[int, list[str]]]:
+    """
+    Total parsimony score over all sites of aligned sequences.
+
+    Args:
+        tree:            adjacency dict.
+        leaf_sequences:  {leaf_node: sequence_string} (equal-length strings).
+        alphabet:        characters to consider.
+
+    Returns:
+        (total_score, node_sequences) where node_sequences maps every node to
+        its reconstructed sequence as a list of characters.
+    """
+    lengths = {len(s) for s in leaf_sequences.values()}
+    if len(lengths) != 1:
+        raise ValueError("All leaf sequences must have the same length.")
+    seq_len = lengths.pop()
+
+    total = 0
+    node_seqs: dict[int, list[str]] = {n: [] for n in tree}
+
+    for site in range(seq_len):
+        leaf_chars = {node: seq[site] for node, seq in leaf_sequences.items()}
+        site_score, assignment = small_parsimony(tree, leaf_chars, alphabet)
+        total += site_score
+        for node, char in assignment.items():
+            node_seqs[node].append(char)
+
+    return total, node_seqs
+
+
+def newick(tree: Tree, labels: list[str]) -> str:
+    """
+    Serialise *tree* in Newick format.
+    Roots at the node with the highest index (last internal node created).
+    """
+    root = max(tree)
+    return _newick(tree, root, None, labels) + ";"

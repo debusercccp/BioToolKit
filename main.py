@@ -290,6 +290,97 @@ def _fmt_perm(p: list[int]) -> str:
     return "(" + " ".join(f"+{x}" if x > 0 else str(x) for x in p) + ")"
 
 
+def _read_distance_matrix() -> tuple[list[list[float]], list[str]]:
+    """
+    Read a distance matrix from stdin.
+    First line: space-separated labels.
+    Following n lines: one row of floats each.
+    """
+    print("Enter labels (space-separated, e.g.  A B C D):")
+    raw_labels = input().strip().split()
+    if not raw_labels:
+        raise ValueError("No labels provided.")
+    n = len(raw_labels)
+    print(f"Enter {n} rows of {n} distances (one row per line):")
+    matrix: list[list[float]] = []
+    for i in range(n):
+        row_raw = input().strip().split()
+        if len(row_raw) != n:
+            raise ValueError(f"Row {i+1}: expected {n} values, got {len(row_raw)}.")
+        matrix.append([float(x) for x in row_raw])
+    for i in range(n):
+        for j in range(i + 1, n):
+            if abs(matrix[i][j] - matrix[j][i]) > 1e-9:
+                raise ValueError(
+                    f"Matrix not symmetric at ({i},{j}): "
+                    f"{matrix[i][j]} vs {matrix[j][i]}."
+                )
+    return matrix, raw_labels
+
+
+def _print_edges(edges: list[tuple[int, int, float]], labels: list[str]) -> None:
+    """Pretty-print tree edges with label resolution."""
+    n = len(labels)
+    def _name(node: int) -> str:
+        return labels[node] if node < n else f"n{node}"
+    for u, v, w in edges:
+        print(f"  {_name(u):>6} -- {_name(v):<6}  {w:.4f}")
+
+
+def run_cap7() -> None:
+    """Molecular evolution: UPGMA, Neighbor Joining, Small Parsimony."""
+    print("\n--- [CAP 7] MOLECULAR EVOLUTION ---")
+    print("  1) UPGMA")
+    print("  2) Neighbor Joining")
+    print("  3) Small Parsimony (Fitch)")
+    sub = input("Choice: ").strip()
+
+    if sub in ("1", "2"):
+        matrix, labels = _read_distance_matrix()
+        n = len(labels)
+        if sub == "1":
+            tree, edges = bio.upgma(matrix, labels)
+            print(f"\nUPGMA tree  ({n} leaves, {len(tree) - n} internal nodes):")
+        else:
+            tree, edges = bio.neighbor_joining(matrix, labels)
+            print(f"\nNeighbor Joining tree  ({n} leaves):")
+        _print_edges(edges, labels)
+        print(f"\nNewick: {bio.newick(tree, labels)}")
+
+    elif sub == "3":
+        print("Enter leaf labels (space-separated):")
+        raw_labels = input().strip().split()
+        if not raw_labels:
+            raise ValueError("No labels provided.")
+        n = len(raw_labels)
+        print(f"Enter aligned sequences for each leaf ({n} sequences):")
+        leaf_sequences: dict[int, str] = {}
+        for i, label in enumerate(raw_labels):
+            seq = input(f"  {label}: ").strip().upper()
+            if not seq:
+                raise ValueError(f"Empty sequence for leaf '{label}'.")
+            leaf_sequences[i] = seq
+        seqs = list(leaf_sequences.values())
+        seq_len = len(seqs[0])
+        if any(len(s) != seq_len for s in seqs):
+            raise ValueError("All sequences must have the same length.")
+        print("\nBuilding tree via Neighbor Joining on Hamming distances...")
+        dist = [
+            [bio.hamming_distance(seqs[i], seqs[j]) for j in range(n)]
+            for i in range(n)
+        ]
+        tree, _ = bio.neighbor_joining(dist, raw_labels)
+        score, node_seqs = bio.parsimony_score(tree, leaf_sequences)
+        print(f"\nParsimony score: {score}")
+        print("\nReconstructed ancestral sequences:")
+        for node, chars in node_seqs.items():
+            if node >= n:
+                print(f"  n{node}: {''.join(chars)}")
+
+    else:
+        print("Invalid choice.")
+
+
 MENU = {
     "1": ("Origin Search      (Cap 1)",   run_cap1),
     "2": ("Motif Search       (Cap 2)",   run_cap2),
@@ -297,6 +388,7 @@ MENU = {
     "4": ("Protein Tools      (Cap 4)",   run_cap4),
     "5": ("Sequence Alignment (Cap 5)",   run_cap5),
     "6": ("Genome Rearrangements (Cap 6)", run_cap6),
+    "7": ("Molecular Evolution   (Cap 7)", run_cap7),
 }
 
 
