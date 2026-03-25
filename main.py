@@ -6,6 +6,7 @@ Run:  python main.py
 """
 
 import sys
+import math as _math
 import bio_logic as bio
 
 try:
@@ -498,6 +499,117 @@ def run_cap9() -> None:
         print("Invalid choice.")
 
 
+def _read_hmm_params() -> tuple[list[str], list[str], dict, dict, dict]:
+    """Interactive input for HMM parameters."""
+    print("Enter state names (space-separated):")
+    states = input().strip().split()
+    if not states:
+        raise ValueError("No states provided.")
+    print("Enter emission alphabet (space-separated):")
+    alphabet = input().strip().split()
+    if not alphabet:
+        raise ValueError("No alphabet provided.")
+    print(f"Start probabilities for {states}:")
+    start_p: dict[str, float] = {}
+    for s in states:
+        v = float(input(f"  P(start={s}): ").strip())
+        start_p[s] = v
+    print("Transition probabilities:")
+    trans_p: dict[str, dict[str, float]] = {}
+    for s in states:
+        trans_p[s] = {}
+        for t in states:
+            v = float(input(f"  P({s}->{t}): ").strip())
+            trans_p[s][t] = v
+    print("Emission probabilities:")
+    emit_p: dict[str, dict[str, float]] = {}
+    for s in states:
+        emit_p[s] = {}
+        for a in alphabet:
+            v = float(input(f"  P({s} emits {a}): ").strip())
+            emit_p[s][a] = v
+    return states, alphabet, start_p, trans_p, emit_p
+
+
+def run_cap10() -> None:
+    """HMM & gene finding: Viterbi, Forward, Baum-Welch, CpG islands."""
+    print("\n--- [CAP 10] HMM & GENE FINDING ---")
+    print("  1) Viterbi (most probable path)")
+    print("  2) Forward (log P of observation sequence)")
+    print("  3) Baum-Welch (parameter training)")
+    print("  4) CpG island detection")
+    sub = input("Choice: ").strip()
+
+    if sub in ("1", "2", "3"):
+        print("\n  HMM:")
+        print("  1) Casino (fair/loaded die)  2) Custom")
+        hmm_choice = input("  Choice: ").strip()
+
+        if hmm_choice == "1":
+            states   = ["F", "L"]
+            alphabet = list("123456")
+            start_p  = {"F": 0.5, "L": 0.5}
+            trans_p  = {"F": {"F": 0.95, "L": 0.05}, "L": {"F": 0.10, "L": 0.90}}
+            emit_p   = {
+                "F": {str(i): 1/6 for i in range(1, 7)},
+                "L": {"1":0.1,"2":0.1,"3":0.1,"4":0.1,"5":0.1,"6":0.5},
+            }
+            print("Enter observation sequence (e.g. 315662663):")
+        else:
+            states, alphabet, start_p, trans_p, emit_p = _read_hmm_params()
+            print("Enter observation sequence (space-separated symbols):")
+
+        raw = input().strip()
+        obs = raw.split() if " " in raw else list(raw)
+        if not obs:
+            raise ValueError("Empty observation sequence.")
+
+        if sub == "1":
+            path, lp = bio.viterbi(obs, states, start_p, trans_p, emit_p)
+            print(f"\nMost probable path:  {''.join(path)}")
+            print(f"Log probability   :  {lp:.4f}")
+
+        elif sub == "2":
+            _, log_p = bio.forward(obs, states, start_p, trans_p, emit_p)
+            print(f"\nlog P(obs | model) = {log_p:.4f}")
+            print(f"P(obs | model)     = {_math.exp(log_p):.4e}")
+
+        elif sub == "3":
+            iters = _read_int("EM iterations", 100)
+            sp2, tp2, ep2 = bio.baum_welch(
+                obs, states, alphabet, start_p, trans_p, emit_p, iterations=iters
+            )
+            print("\nRe-estimated parameters:")
+            print("  Transitions:")
+            for s in states:
+                for t in states:
+                    print(f"    {s}->{t}: {tp2[s][t]:.4f}")
+            print("  Emissions:")
+            for s in states:
+                for a in alphabet:
+                    print(f"    {s} emits {a}: {ep2[s][a]:.4f}")
+
+    elif sub == "4":
+        print("Enter DNA sequence (A/C/G/T):")
+        seq = input().strip().upper()
+        if not seq:
+            raise ValueError("Empty sequence.")
+        min_len = _read_int("Minimum island length", 10)
+        islands = bio.find_cpg_islands(seq, min_length=min_len)
+        if islands:
+            print(f"\nFound {len(islands)} CpG island(s):")
+            for start, end in islands:
+                snippet = seq[start : min(start + 20, end + 1)]
+                dots = "..." if end - start + 1 > 20 else ""
+                print(f"  [{start:>5}, {end:>5}]  len={end-start+1:>4}  {snippet}{dots}")
+        else:
+            print("No CpG islands detected.")
+
+    else:
+        print("Invalid choice.")
+
+
+
 MENU = {
     "1": ("Origin Search      (Cap 1)",   run_cap1),
     "2": ("Motif Search       (Cap 2)",   run_cap2),
@@ -508,6 +620,7 @@ MENU = {
     "7": ("Molecular Evolution   (Cap 7)", run_cap7),
     "8": ("Gene Clustering       (Cap 8)", run_cap8),
     "9": ("Read Mapping / BWT    (Cap 9)", run_cap9),
+    "10": ("HMM & Gene Finding   (Cap 10)", run_cap10),
 }
 
 

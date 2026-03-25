@@ -1410,3 +1410,370 @@ def bwt_match_with_mismatches(
                     results[align_start] = mm
 
     return sorted(results.items())
+
+
+# ---------------------------------------------------------------------------
+# CHAPTER 10 — HMM & Gene finding
+# ---------------------------------------------------------------------------
+#
+# Algorithms covered:
+#   - viterbi          (most probable state path, log-space)
+#   - forward          (total probability of observations, log-space)
+#   - backward         (backward probabilities, log-space)
+#   - baum_welch       (EM training of HMM parameters)
+#   - cpg_island_hmm   (pre-built 2-state HMM for CpG island detection)
+#
+# HMM parameter conventions
+# --------------------------
+#   states   : list[str]
+#   start_p  : dict[state -> float]          (must sum to 1)
+#   trans_p  : dict[state -> dict[state -> float]]
+#   emit_p   : dict[state -> dict[symbol -> float]]
+#
+# All probabilities are plain floats in [0, 1].
+# Internal computations use log-space to avoid underflow.
+# ---------------------------------------------------------------------------
+
+import math as _math
+
+_LOG_ZERO = float("-inf")
+
+
+def _safe_log(x: float) -> float:
+    return _math.log(x) if x > 0 else _LOG_ZERO
+
+
+def _log_add(a: float, b: float) -> float:
+    """log(exp(a) + exp(b)) computed stably."""
+    if a == _LOG_ZERO:
+        return b
+    if b == _LOG_ZERO:
+        return a
+    if a >= b:
+        return a + _math.log1p(_math.exp(b - a))
+    return b + _math.log1p(_math.exp(a - b))
+
+
+def _validate_hmm(
+    states: list[str],
+    start_p: dict[str, float],
+    trans_p: dict[str, dict[str, float]],
+    emit_p:  dict[str, dict[str, float]],
+) -> None:
+    for s in states:
+        if s not in start_p:
+            raise ValueError(f"start_p missing state '{s}'.")
+        if s not in trans_p:
+            raise ValueError(f"trans_p missing state '{s}'.")
+        if s not in emit_p:
+            raise ValueError(f"emit_p missing state '{s}'.")
+
+
+# ---- Viterbi ---------------------------------------------------------------
+
+def viterbi(
+    obs:     list[str],
+    states:  list[str],
+    start_p: dict[str, float],
+    trans_p: dict[str, dict[str, float]],
+    emit_p:  dict[str, dict[str, float]],
+) -> tuple[list[str], float]:
+    """
+    Viterbi algorithm — most probable state path (log-space).
+
+    Args:
+        obs:     observed sequence (list of emission symbols).
+        states:  list of hidden state names.
+        start_p: initial state probabilities.
+        trans_p: transition probabilities  trans_p[from][to].
+        emit_p:  emission probabilities    emit_p[state][symbol].
+
+    Returns:
+        (path, log_probability)
+    """
+    if not obs:
+        raise ValueError("Observation sequence must be non-empty.")
+    _validate_hmm(states, start_p, trans_p, emit_p)
+
+    # dp[state] = best log-prob to reach state at current step
+    dp: dict[str, float] = {
+        s: _safe_log(start_p.get(s, 0.0)) + _safe_log(emit_p[s].get(obs[0], 1e-300))
+        for s in states
+    }
+    # backpointer[t][state] = previous state on best path
+    back: list[dict[str, str]] = []
+
+    for t in range(1, len(obs)):
+        new_dp: dict[str, float] = {}
+        bp: dict[str, str] = {}
+        for s in states:
+            log_emit = _safe_log(emit_p[s].get(obs[t], 1e-300))
+            best_lp, best_prev = max(
+                (dp[prev] + _safe_log(trans_p[prev].get(s, 1e-300)) + log_emit, prev)
+                for prev in states
+            )
+            new_dp[s] = best_lp
+            bp[s] = best_prev
+        dp = new_dp
+        back.append(bp)
+
+    # Traceback
+    last = max(states, key=lambda s: dp[s])
+    path = [last]
+    for bp in reversed(back):
+        path.append(bp[path[-1]])
+    path.reverse()
+
+    return path, dp[last]
+
+
+# ---- Forward ---------------------------------------------------------------
+
+def forward(
+    obs:     list[str],
+    states:  list[str],
+    start_p: dict[str, float],
+    trans_p: dict[str, dict[str, float]],
+    emit_p:  dict[str, dict[str, float]],
+) -> tuple[list[dict[str, float]], float]:
+    """
+    Forward algorithm — log P(observations | model).
+
+    Returns:
+        (alpha, log_prob) where alpha[t][state] is the log forward probability
+        at time t, and log_prob = log P(obs | model).
+    """
+    if not obs:
+        raise ValueError("Observation sequence must be non-empty.")
+    _validate_hmm(states, start_p, trans_p, emit_p)
+
+    alpha: list[dict[str, float]] = [{
+        s: _safe_log(start_p.get(s, 0.0)) + _safe_log(emit_p[s].get(obs[0], 1e-300))
+        for s in states
+    }]
+
+    for t in range(1, len(obs)):
+        col: dict[str, float] = {}
+        for s in states:
+            log_emit = _safe_log(emit_p[s].get(obs[t], 1e-300))
+            log_sum = _LOG_ZERO
+            for prev in states:
+                log_sum = _log_add(
+                    log_sum,
+                    alpha[t - 1][prev] + _safe_log(trans_p[prev].get(s, 1e-300))
+                )
+            col[s] = log_sum + log_emit
+        alpha.append(col)
+
+    log_prob = _LOG_ZERO
+    for s in states:
+        log_prob = _log_add(log_prob, alpha[-1][s])
+
+    return alpha, log_prob
+
+
+# ---- Backward --------------------------------------------------------------
+
+def backward(
+    obs:     list[str],
+    states:  list[str],
+    trans_p: dict[str, dict[str, float]],
+    emit_p:  dict[str, dict[str, float]],
+) -> list[dict[str, float]]:
+    """
+    Backward algorithm — log backward probabilities β[t][state].
+
+    β[t][s] = log P(obs[t+1:] | state at t = s, model)
+    """
+    if not obs:
+        raise ValueError("Observation sequence must be non-empty.")
+
+    T = len(obs)
+    # β[T-1][s] = log(1) = 0 for all states
+    beta: list[dict[str, float]] = [{s: 0.0 for s in states}]
+
+    for t in range(T - 2, -1, -1):
+        col: dict[str, float] = {}
+        for s in states:
+            log_sum = _LOG_ZERO
+            for nxt in states:
+                log_sum = _log_add(
+                    log_sum,
+                    _safe_log(trans_p[s].get(nxt, 1e-300))
+                    + _safe_log(emit_p[nxt].get(obs[t + 1], 1e-300))
+                    + beta[0][nxt]
+                )
+            col[s] = log_sum
+        beta.insert(0, col)
+
+    return beta
+
+
+# ---- Baum-Welch ------------------------------------------------------------
+
+def baum_welch(
+    obs:      list[str],
+    states:   list[str],
+    alphabet: list[str],
+    start_p:  dict[str, float],
+    trans_p:  dict[str, dict[str, float]],
+    emit_p:   dict[str, dict[str, float]],
+    iterations: int = 100,
+    tol: float = 1e-6,
+) -> tuple[dict[str, float], dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+    """
+    Baum-Welch algorithm (EM) — estimate HMM parameters from observations.
+
+    Args:
+        obs:        observed sequence.
+        states:     hidden state names.
+        alphabet:   emission symbols.
+        start_p, trans_p, emit_p: initial parameter estimates.
+        iterations: maximum EM iterations.
+        tol:        log-likelihood convergence threshold.
+
+    Returns:
+        (start_p, trans_p, emit_p) — updated parameter dicts.
+    """
+    if not obs:
+        raise ValueError("Observation sequence must be non-empty.")
+    _validate_hmm(states, start_p, trans_p, emit_p)
+
+    # Work with mutable copies
+    sp  = {s: start_p[s] for s in states}
+    tp  = {s: {t: trans_p[s].get(t, 1e-300) for t in states} for s in states}
+    ep  = {s: {a: emit_p[s].get(a, 1e-300) for a in alphabet} for s in states}
+
+    prev_ll = _LOG_ZERO
+    T = len(obs)
+
+    for _ in range(iterations):
+        alpha, log_prob = forward(obs, states, sp, tp, ep)
+        beta             = backward(obs, states, tp, ep)
+
+        # ---- E-step: compute γ and ξ ----
+        # γ[t][s] = P(state_t = s | obs, model)
+        gamma: list[dict[str, float]] = []
+        for t in range(T):
+            log_norm = _LOG_ZERO
+            g: dict[str, float] = {}
+            for s in states:
+                g[s] = alpha[t][s] + beta[t][s]
+                log_norm = _log_add(log_norm, g[s])
+            gamma.append({s: _math.exp(g[s] - log_norm) for s in states})
+
+        # ξ[t][s][r] = P(state_t=s, state_{t+1}=r | obs, model)
+        xi: list[dict[str, dict[str, float]]] = []
+        for t in range(T - 1):
+            log_norm = _LOG_ZERO
+            x: dict[str, dict[str, float]] = {s: {} for s in states}
+            for s in states:
+                for r in states:
+                    val = (alpha[t][s]
+                           + _safe_log(tp[s].get(r, 1e-300))
+                           + _safe_log(ep[r].get(obs[t + 1], 1e-300))
+                           + beta[t + 1][r])
+                    x[s][r] = val
+                    log_norm = _log_add(log_norm, val)
+            xi.append({s: {r: _math.exp(x[s][r] - log_norm) for r in states} for s in states})
+
+        # ---- M-step: re-estimate parameters ----
+        for s in states:
+            sp[s] = gamma[0][s]
+
+        for s in states:
+            denom = sum(gamma[t][s] for t in range(T - 1))
+            for r in states:
+                tp[s][r] = sum(xi[t][s][r] for t in range(T - 1)) / (denom + 1e-300)
+
+        for s in states:
+            denom = sum(gamma[t][s] for t in range(T))
+            for a in alphabet:
+                ep[s][a] = sum(
+                    gamma[t][s] for t in range(T) if obs[t] == a
+                ) / (denom + 1e-300)
+
+        if abs(log_prob - prev_ll) < tol:
+            break
+        prev_ll = log_prob
+
+    return sp, tp, ep
+
+
+# ---- CpG island HMM --------------------------------------------------------
+
+def cpg_island_hmm() -> tuple[list[str], dict, dict, dict]:
+    """
+    Pre-built 2-state HMM for CpG island detection in DNA sequences.
+
+    States:
+        "CpG"    — inside a CpG island (G+C rich, elevated CpG dinucleotide freq)
+        "non-CpG"— background genomic sequence
+
+    Returns:
+        (states, start_p, trans_p, emit_p)
+
+    Usage:
+        states, sp, tp, ep = cpg_island_hmm()
+        path, lp = viterbi(list(dna_sequence), states, sp, tp, ep)
+    """
+    states = ["CpG", "non-CpG"]
+
+    start_p = {"CpG": 0.5, "non-CpG": 0.5}
+
+    # Transition probabilities (Durbin et al. 1998, Table 3.1)
+    trans_p = {
+        "CpG":     {"CpG": 0.9999, "non-CpG": 0.0001},
+        "non-CpG": {"CpG": 0.0002, "non-CpG": 0.9998},
+    }
+
+    # Emission probabilities (nucleotide frequencies per state)
+    emit_p = {
+        "CpG": {
+            "A": 0.111, "C": 0.339, "G": 0.380, "T": 0.170,
+        },
+        "non-CpG": {
+            "A": 0.300, "C": 0.200, "G": 0.200, "T": 0.300,
+        },
+    }
+
+    return states, start_p, trans_p, emit_p
+
+
+def find_cpg_islands(sequence: str, min_length: int = 10) -> list[tuple[int, int]]:
+    """
+    Predict CpG islands in *sequence* using the pre-built HMM + Viterbi.
+
+    Args:
+        sequence:   DNA string (A/C/G/T).
+        min_length: minimum island length to report (filters noise).
+
+    Returns:
+        List of (start, end) intervals (0-based, inclusive) predicted as
+        CpG islands.
+    """
+    seq = sequence.upper()
+    invalid = set(seq) - set("ACGT")
+    if invalid:
+        raise ValueError(f"Sequence contains invalid characters: {invalid}")
+
+    states, sp, tp, ep = cpg_island_hmm()
+    path, _ = viterbi(list(seq), states, sp, tp, ep)
+
+    islands: list[tuple[int, int]] = []
+    in_island = False
+    start = 0
+
+    for i, state in enumerate(path):
+        if state == "CpG" and not in_island:
+            in_island = True
+            start = i
+        elif state != "CpG" and in_island:
+            in_island = False
+            if i - start >= min_length:
+                islands.append((start, i - 1))
+
+    if in_island and len(seq) - start >= min_length:
+        islands.append((start, len(seq) - 1))
+
+    return islands
