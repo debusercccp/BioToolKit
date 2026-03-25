@@ -381,6 +381,123 @@ def run_cap7() -> None:
         print("Invalid choice.")
 
 
+def run_cap8() -> None:
+    """Gene clustering: hard K-Means, soft K-Means, hierarchical clustering."""
+    print("\n--- [CAP 8] GENE CLUSTERING ---")
+    print("  1) Hard K-Means (Lloyd)")
+    print("  2) Soft K-Means")
+    print("  3) Hierarchical clustering")
+    sub = input("Choice: ").strip()
+    if sub not in ("1", "2", "3"):
+        print("Invalid choice.")
+        return
+
+    print("Enter data points (one per line, space-separated floats; empty line to stop):")
+    data: list[list[float]] = []
+    while True:
+        line = input().strip()
+        if not line:
+            break
+        try:
+            data.append([float(x) for x in line.split()])
+        except ValueError:
+            print("  Skipping invalid line.")
+    if not data:
+        raise ValueError("No data points provided.")
+
+    if sub == "1":
+        k = _read_int("Number of clusters k", 2)
+        centers, clusters = bio.lloyd_algorithm(data, k)
+        print(f"\nK-Means converged ({k} clusters):")
+        for ci, (center, cluster) in enumerate(zip(centers, clusters)):
+            c_fmt = "  ".join(f"{v:.3f}" for v in center)
+            print(f"  Cluster {ci+1}: center=[{c_fmt}]  n={len(cluster)}")
+
+    elif sub == "2":
+        k    = _read_int("Number of clusters k", 2)
+        beta_raw = input("Stiffness beta (default 1.0): ").strip()
+        beta = float(beta_raw) if beta_raw else 1.0
+        centers, resp = bio.soft_kmeans(data, k, beta=beta)
+        print(f"\nSoft K-Means converged (k={k}, beta={beta}):")
+        for ci, center in enumerate(centers):
+            c_fmt = "  ".join(f"{v:.3f}" for v in center)
+            print(f"  Center {ci+1}: [{c_fmt}]")
+        show = input("Show responsibilities? [y/N]: ").strip().lower()
+        if show == "y":
+            print("  Point  " + "  ".join(f"C{j+1}" for j in range(k)))
+            for i, row in enumerate(resp):
+                r_fmt = "  ".join(f"{r:.3f}" for r in row)
+                print(f"  {i+1:>5}  {r_fmt}")
+
+    elif sub == "3":
+        print("  Linkage:")
+        print("  1) Single   2) Complete   3) Average")
+        lk_choice = input("  Choice (default 3): ").strip()
+        linkage = {"1": "single", "2": "complete", "3": "average"}.get(lk_choice, "average")
+        history = bio.hierarchical_clustering(data, linkage=linkage)
+        n = len(data)
+        print(f"\nHierarchical clustering ({linkage} linkage)  — merge order:")
+        def _lbl(idx: int) -> str:
+            return f"p{idx+1}" if idx < n else f"c{idx-n+1}"
+        for step, (a, b, dist) in enumerate(history, 1):
+            print(f"  step {step:>2}: merge {_lbl(a):>4} + {_lbl(b):<4}  dist={dist:.4f}")
+
+
+def run_cap9() -> None:
+    """Read mapping via BWT: transform, inverse, exact/inexact matching."""
+    print("\n--- [CAP 9] READ MAPPING (BWT) ---")
+    print("  1) BWT transform")
+    print("  2) BWT inverse")
+    print("  3) Exact pattern matching (backward search)")
+    print("  4) Inexact matching (up to d mismatches)")
+    sub = input("Choice: ").strip()
+
+    if sub == "1":
+        text = input("Text: ").strip().upper()
+        if not text:
+            raise ValueError("Empty input.")
+        bwt = bio.bwt_transform(text)
+        sa  = bio.suffix_array(text)
+        print(f"BWT : {bwt}")
+        print(f"SA  : {sa}")
+
+    elif sub == "2":
+        bwt = input("BWT string: ").strip()
+        if not bwt:
+            raise ValueError("Empty input.")
+        original = bio.bwt_inverse(bwt)
+        print(f"Original: {original}")
+
+    elif sub == "3":
+        text    = input("Reference text: ").strip().upper()
+        pattern = input("Pattern        : ").strip().upper()
+        if not text or not pattern:
+            raise ValueError("Text and pattern must be non-empty.")
+        hits = bio.bwt_match(text, pattern)
+        if hits:
+            print(f"Found {len(hits)} occurrence(s) at positions: {hits}")
+        else:
+            print("Pattern not found.")
+
+    elif sub == "4":
+        text    = input("Reference text : ").strip().upper()
+        pattern = input("Pattern        : ").strip().upper()
+        if not text or not pattern:
+            raise ValueError("Text and pattern must be non-empty.")
+        d = _read_int("Max mismatches d", 1)
+        hits = bio.bwt_match_with_mismatches(text, pattern, max_mismatches=d)
+        if hits:
+            print(f"Found {len(hits)} hit(s):")
+            for pos, mm in hits:
+                snippet = (text + "$")[pos : pos + len(pattern)]
+                print(f"  pos={pos:>5}  mismatches={mm}  [{snippet}]")
+        else:
+            print("No hits found.")
+
+    else:
+        print("Invalid choice.")
+
+
 MENU = {
     "1": ("Origin Search      (Cap 1)",   run_cap1),
     "2": ("Motif Search       (Cap 2)",   run_cap2),
@@ -389,6 +506,8 @@ MENU = {
     "5": ("Sequence Alignment (Cap 5)",   run_cap5),
     "6": ("Genome Rearrangements (Cap 6)", run_cap6),
     "7": ("Molecular Evolution   (Cap 7)", run_cap7),
+    "8": ("Gene Clustering       (Cap 8)", run_cap8),
+    "9": ("Read Mapping / BWT    (Cap 9)", run_cap9),
 }
 
 

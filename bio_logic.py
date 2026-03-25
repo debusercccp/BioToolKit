@@ -937,3 +937,476 @@ def newick(tree: Tree, labels: list[str]) -> str:
     """
     root = max(tree)
     return _newick(tree, root, None, labels) + ";"
+
+
+# ---------------------------------------------------------------------------
+# CHAPTER 8 — Gene clustering
+# ---------------------------------------------------------------------------
+#
+# Algorithms covered:
+#   - euclidean_distance   (shared primitive)
+#   - lloyd_algorithm      (hard K-Means)
+#   - soft_kmeans          (EM-style soft assignment via responsibilities)
+#   - hierarchical_clustering (agglomerative, single/complete/average linkage)
+# ---------------------------------------------------------------------------
+
+import math as _math
+
+
+def euclidean_distance(v: list[float], w: list[float]) -> float:
+    """Euclidean distance between two equal-length vectors."""
+    if len(v) != len(w):
+        raise ValueError(f"Vectors must have equal length ({len(v)} vs {len(w)}).")
+    return _math.sqrt(sum((a - b) ** 2 for a, b in zip(v, w)))
+
+
+def lloyd_algorithm(
+    data: list[list[float]],
+    k: int,
+    iterations: int = 100,
+    init_centers: list[list[float]] | None = None,
+) -> tuple[list[list[float]], list[list[list[float]]]]:
+    """
+    Hard K-Means (Lloyd's algorithm).
+
+    Args:
+        data:         list of n points, each a list of d floats.
+        k:            number of clusters.
+        iterations:   maximum number of E-M iterations.
+        init_centers: optional starting centers (length k);
+                      defaults to the first k points in *data*.
+
+    Returns:
+        (centers, clusters) where
+          centers  — list of k centroid vectors
+          clusters — list of k lists, each containing the points assigned
+                     to that cluster
+    """
+    if k < 1:
+        raise ValueError(f"k must be ≥ 1, got {k}.")
+    if k > len(data):
+        raise ValueError(f"k ({k}) cannot exceed the number of data points ({len(data)}).")
+
+    d = len(data[0])
+    if any(len(p) != d for p in data):
+        raise ValueError("All data points must have the same dimensionality.")
+
+    centers = [list(c) for c in (init_centers if init_centers else data[:k])]
+
+    for _ in range(iterations):
+        # Assignment step
+        clusters: list[list[list[float]]] = [[] for _ in range(k)]
+        for point in data:
+            idx = min(range(k), key=lambda i: euclidean_distance(point, centers[i]))
+            clusters[idx].append(point)
+
+        # Update step
+        new_centers: list[list[float]] = []
+        for ci, cluster in enumerate(clusters):
+            if not cluster:
+                new_centers.append(list(centers[ci]))   # keep old center
+                continue
+            new_centers.append([
+                sum(p[j] for p in cluster) / len(cluster)
+                for j in range(d)
+            ])
+
+        if new_centers == centers:
+            break
+        centers = new_centers
+
+    return centers, clusters
+
+
+def soft_kmeans(
+    data: list[list[float]],
+    k: int,
+    beta: float = 1.0,
+    iterations: int = 100,
+    init_centers: list[list[float]] | None = None,
+) -> tuple[list[list[float]], list[list[float]]]:
+    """
+    Soft K-Means (EM-style with stiffness parameter β).
+
+    Each point is assigned a soft responsibility for every cluster rather
+    than a hard label.  Higher β → sharper assignments (approaches hard
+    K-Means as β → ∞).
+
+    Args:
+        data:         list of n points.
+        k:            number of clusters.
+        beta:         stiffness (β > 0).  Typical range: 0.1 – 10.
+        iterations:   maximum EM iterations.
+        init_centers: optional starting centers; defaults to first k points.
+
+    Returns:
+        (centers, responsibilities) where
+          centers          — k centroid vectors
+          responsibilities — n×k matrix (list of lists): resp[i][j] is the
+                             responsibility of cluster j for point i
+    """
+    if beta <= 0:
+        raise ValueError(f"beta must be > 0, got {beta}.")
+    if k < 1:
+        raise ValueError(f"k must be ≥ 1, got {k}.")
+    if k > len(data):
+        raise ValueError(f"k ({k}) cannot exceed the number of data points ({len(data)}).")
+
+    d = len(data[0])
+    n = len(data)
+    if any(len(p) != d for p in data):
+        raise ValueError("All data points must have the same dimensionality.")
+
+    centers = [list(c) for c in (init_centers if init_centers else data[:k])]
+
+    resp: list[list[float]] = [[0.0] * k for _ in range(n)]
+
+    for _ in range(iterations):
+        # E-step: compute responsibilities via softmax of -β·dist²
+        for i, point in enumerate(data):
+            # Use log-sum-exp for numerical stability
+            log_weights = [-beta * euclidean_distance(point, centers[j]) ** 2
+                           for j in range(k)]
+            max_lw = max(log_weights)
+            exp_w = [_math.exp(lw - max_lw) for lw in log_weights]
+            total = sum(exp_w)
+            resp[i] = [e / total for e in exp_w]
+
+        # M-step: update centers as responsibility-weighted means
+        new_centers: list[list[float]] = []
+        for j in range(k):
+            total_resp = sum(resp[i][j] for i in range(n))
+            if total_resp < 1e-12:
+                new_centers.append(list(centers[j]))
+                continue
+            new_centers.append([
+                sum(resp[i][j] * data[i][dim] for i in range(n)) / total_resp
+                for dim in range(d)
+            ])
+
+        if new_centers == centers:
+            break
+        centers = new_centers
+
+    return centers, resp
+
+
+# ---- Hierarchical clustering -----------------------------------------------
+
+def hierarchical_clustering(
+    data: list[list[float]],
+    linkage: str = "average",
+) -> list[tuple[int, int, float]]:
+    """
+    Agglomerative hierarchical clustering with Euclidean distance.
+
+    Args:
+        data:    list of n points (each a list of floats).
+        linkage: distance between clusters — one of:
+                   "single"   (min pairwise distance)
+                   "complete" (max pairwise distance)
+                   "average"  (mean pairwise distance, a.k.a. UPGMA-like)
+
+    Returns:
+        merge_history — list of (cluster_a, cluster_b, distance) tuples in
+                        merge order.  Cluster indices 0…n-1 are leaves;
+                        index n+step is the new cluster formed at step *step*.
+    """
+    valid_linkages = ("single", "complete", "average")
+    if linkage not in valid_linkages:
+        raise ValueError(f"linkage must be one of {valid_linkages}, got '{linkage}'.")
+
+    n = len(data)
+    if n < 2:
+        raise ValueError("Need at least 2 data points for clustering.")
+    if any(len(p) != len(data[0]) for p in data):
+        raise ValueError("All data points must have the same dimensionality.")
+
+    # Each cluster is a list of original point indices
+    clusters: dict[int, list[int]] = {i: [i] for i in range(n)}
+    active = list(range(n))
+    next_id = n
+    history: list[tuple[int, int, float]] = []
+
+    def _cluster_dist(a_idx: int, b_idx: int) -> float:
+        pts_a = clusters[a_idx]
+        pts_b = clusters[b_idx]
+        dists = [
+            euclidean_distance(data[i], data[j])
+            for i in pts_a
+            for j in pts_b
+        ]
+        if linkage == "single":
+            return min(dists)
+        if linkage == "complete":
+            return max(dists)
+        return sum(dists) / len(dists)   # average
+
+    while len(active) > 1:
+        best_dist = _math.inf
+        best_pair = (active[0], active[1])
+
+        for i in range(len(active)):
+            for j in range(i + 1, len(active)):
+                d = _cluster_dist(active[i], active[j])
+                if d < best_dist:
+                    best_dist = d
+                    best_pair = (active[i], active[j])
+
+        a, b = best_pair
+        history.append((a, b, best_dist))
+
+        # Merge b into a new cluster
+        clusters[next_id] = clusters[a] + clusters[b]
+        active.remove(a)
+        active.remove(b)
+        active.append(next_id)
+        next_id += 1
+
+    return history
+
+
+# ---------------------------------------------------------------------------
+# CHAPTER 9 — Read mapping (Burrows-Wheeler Transform)
+# ---------------------------------------------------------------------------
+#
+# Algorithms covered:
+#   - bwt_transform     (suffix-array based, O(n log n) — no explicit rotations)
+#   - bwt_inverse       (LF-mapping with precomputed rank table, O(n))
+#   - suffix_array      (prefix-doubling / built during BWT, O(n log n))
+#   - bwt_match         (backward search / exact pattern matching, O(p log n))
+#   - bwt_match_with_mismatches  (inexact search with up to d mismatches)
+#
+# All functions accept strings that may or may not already end with '$'.
+# The sentinel '$' is assumed to be lexicographically smaller than all
+# other characters (standard BWT convention).
+# ---------------------------------------------------------------------------
+
+
+def _ensure_sentinel(text: str) -> str:
+    """Append '$' sentinel if not already present."""
+    return text if text.endswith("$") else text + "$"
+
+
+def suffix_array(text: str) -> list[int]:
+    """
+    Build the suffix array of *text* in O(n log² n) via prefix doubling.
+
+    Returns a list SA where SA[i] is the starting index of the i-th
+    lexicographically smallest suffix.
+    """
+    text = _ensure_sentinel(text)
+    n = len(text)
+    # Initial ranking from character ordinals; '$' is forced to rank 0.
+    rank = [0 if c == "$" else ord(c) for c in text]
+    sa = list(range(n))
+    tmp = [0] * n
+
+    gap = 1
+    while gap < n:
+        # Sort by (rank[i], rank[i+gap])
+        def sort_key(i: int) -> tuple[int, int]:
+            return (rank[i], rank[i + gap] if i + gap < n else -1)
+
+        sa.sort(key=sort_key)
+
+        # Re-rank
+        tmp[sa[0]] = 0
+        for i in range(1, n):
+            tmp[sa[i]] = tmp[sa[i - 1]]
+            if sort_key(sa[i]) != sort_key(sa[i - 1]):
+                tmp[sa[i]] += 1
+        rank = tmp[:]
+        if rank[sa[-1]] == n - 1:
+            break   # all ranks unique — done early
+        gap *= 2
+
+    return sa
+
+
+def bwt_transform(text: str) -> str:
+    """
+    Burrows-Wheeler Transform via suffix array (O(n log² n) time, O(n) extra space).
+
+    Builds the suffix array instead of generating all n explicit rotations,
+    avoiding the O(n²) memory cost of the naive approach.
+
+    Args:
+        text: input string (sentinel '$' appended automatically if missing).
+
+    Returns:
+        BWT string of length len(text)+1 (or len(text) if '$' already present).
+    """
+    text = _ensure_sentinel(text)
+    sa = suffix_array(text)
+    # BWT[i] = character just before the suffix that sorts at position i
+    return "".join(text[s - 1] for s in sa)
+
+
+def bwt_inverse(bwt: str) -> str:
+    """
+    Reconstruct the original string from its BWT via LF-mapping (O(n) time).
+
+    Uses a precomputed rank table (occurrence counts) so each LF step is
+    O(1) instead of the O(n) list.index() lookup in the naive version.
+
+    Args:
+        bwt: BWT string (must contain exactly one '$').
+
+    Returns:
+        Original string including the trailing '$'.
+    """
+    if bwt.count("$") != 1:
+        raise ValueError("BWT string must contain exactly one '$' sentinel.")
+
+    n = len(bwt)
+
+    # --- Build first-column offset table ---
+    # first_col_start[c] = index in sorted(bwt) where character c first appears
+    char_counts: dict[str, int] = {}
+    for c in bwt:
+        char_counts[c] = char_counts.get(c, 0) + 1
+    first_col_start: dict[str, int] = {}
+    offset = 0
+    for c in sorted(char_counts):
+        first_col_start[c] = offset
+        offset += char_counts[c]
+
+    # --- Build rank array: rank[i] = # occurrences of bwt[i] in bwt[0:i] ---
+    rank: list[int] = []
+    running: dict[str, int] = {}
+    for c in bwt:
+        rank.append(running.get(c, 0))
+        running[c] = running.get(c, 0) + 1
+
+    # --- LF-mapping: reconstruct the string ---
+    # '$' is the lexicographically smallest character, so its row in the
+    # first column is always 0. We start there and follow LF-mapping
+    # backwards to read off the original characters.
+    idx = 0
+    result: list[str] = []
+
+    for _ in range(n - 1):
+        c = bwt[idx]
+        result.append(c)
+        idx = first_col_start[c] + rank[idx]
+
+    result.reverse()
+    return "".join(result) + "$"
+
+
+def bwt_match(text: str, pattern: str) -> list[int]:
+    """
+    Exact pattern matching via BWT backward search (O(p·|Σ|) time).
+
+    Finds all occurrences of *pattern* in *text* without building an
+    explicit index beyond the suffix array and occurrence table.
+
+    Args:
+        text:    reference string ('$' appended automatically).
+        pattern: query string to search for.
+
+    Returns:
+        Sorted list of 0-based start positions of *pattern* in *text*.
+        Empty list if *pattern* is not found.
+    """
+    if not pattern:
+        raise ValueError("Pattern must be non-empty.")
+
+    text = _ensure_sentinel(text)
+    n = len(text)
+    sa = suffix_array(text)
+    bwt_str = "".join(text[s - 1] for s in sa)
+
+    # Precompute first_col_start and full occurrence table (occ)
+    char_counts: dict[str, int] = {}
+    for c in bwt_str:
+        char_counts[c] = char_counts.get(c, 0) + 1
+    first_col_start: dict[str, int] = {}
+    offset = 0
+    for c in sorted(char_counts):
+        first_col_start[c] = offset
+        offset += char_counts[c]
+
+    # occ[c][i] = number of occurrences of c in bwt_str[0:i]
+    alphabet = sorted(char_counts)
+    occ: dict[str, list[int]] = {c: [0] * (n + 1) for c in alphabet}
+    for i, c in enumerate(bwt_str):
+        for a in alphabet:
+            occ[a][i + 1] = occ[a][i]
+        occ[c][i + 1] += 1
+
+    # --- Backward search ---
+    top, bot = 0, n - 1
+    for char in reversed(pattern):
+        if char not in first_col_start:
+            return []
+        top = first_col_start[char] + occ[char][top]
+        bot = first_col_start[char] + occ[char][bot + 1] - 1
+        if top > bot:
+            return []
+
+    return sorted(sa[top : bot + 1])
+
+
+def bwt_match_with_mismatches(
+    text: str,
+    pattern: str,
+    max_mismatches: int = 1,
+) -> list[tuple[int, int]]:
+    """
+    Inexact pattern matching allowing up to *max_mismatches* substitutions.
+
+    Uses a recursive seed-and-extend strategy: splits the pattern into
+    (max_mismatches+1) seeds, requires at least one seed to match exactly
+    (pigeonhole principle), then verifies candidates with Hamming distance.
+
+    Args:
+        text:            reference string.
+        pattern:         query string.
+        max_mismatches:  maximum number of substitutions allowed (≥ 0).
+
+    Returns:
+        Sorted list of (position, mismatches) tuples.
+    """
+    if max_mismatches < 0:
+        raise ValueError("max_mismatches must be ≥ 0.")
+    if not pattern:
+        raise ValueError("Pattern must be non-empty.")
+
+    text_clean = _ensure_sentinel(text)
+    ref = text_clean[:-1]   # without sentinel for position verification
+    p = len(pattern)
+    n = len(ref)
+    results: dict[int, int] = {}
+
+    # Pigeonhole: at least one of (d+1) seeds must match exactly
+    num_seeds = max_mismatches + 1
+    seed_len = p // num_seeds
+
+    if seed_len == 0:
+        # Pattern too short for pigeonhole — fall back to brute force
+        for i in range(n - p + 1):
+            mm = hamming_distance(pattern, ref[i : i + p])
+            if mm <= max_mismatches:
+                results[i] = mm
+        return sorted(results.items())
+
+    for s in range(num_seeds):
+        seed_start = s * seed_len
+        seed_end   = seed_start + seed_len if s < num_seeds - 1 else p
+        seed = pattern[seed_start:seed_end]
+
+        for hit_pos in bwt_match(ref, seed):
+            # Compute candidate alignment start in *ref*
+            align_start = hit_pos - seed_start
+            align_end   = align_start + p
+            if align_start < 0 or align_end > n:
+                continue
+            candidate = ref[align_start:align_end]
+            mm = hamming_distance(pattern, candidate)
+            if mm <= max_mismatches:
+                if align_start not in results or results[align_start] > mm:
+                    results[align_start] = mm
+
+    return sorted(results.items())
