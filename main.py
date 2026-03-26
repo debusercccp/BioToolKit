@@ -610,6 +610,116 @@ def run_cap10() -> None:
 
 
 
+def run_cap11() -> None:
+    """Advanced alignment: affine gaps, linear space, progressive MSA, tandem repeats."""
+    print("\n--- [CAP 11] ADVANCED ALIGNMENT ---")
+    print("  1) Affine gap global alignment")
+    print("  2) Affine gap local alignment")
+    print("  3) Linear space alignment (Hirschberg)")
+    print("  4) Multiple sequence alignment (progressive, ClustalW-style)")
+    print("  5) Tandem repeats finder")
+    sub = input("Choice: ").strip()
+
+    if sub in ("1", "2", "3"):
+        s1 = input("Sequence 1: ").strip().upper()
+        s2 = input("Sequence 2: ").strip().upper()
+        if not s1 or not s2:
+            raise ValueError("Both sequences must be non-empty.")
+
+        print("  Matrix:  1) BLOSUM62  2) PAM250  3) IDENTITY  4) None (flat)")
+        mc = input("  Choice (default 1): ").strip()
+        mat_map = {"1": "BLOSUM62", "2": "PAM250", "3": "IDENTITY"}
+        matrix = bio.SUBSTITUTION_MATRICES.get(mat_map.get(mc, "BLOSUM62"))
+        mat_label = mat_map.get(mc, "BLOSUM62") if mc in mat_map else "flat"
+
+        go_raw = input("Gap open   (default -11): ").strip()
+        ge_raw = input("Gap extend (default  -1): ").strip()
+        gap_open   = int(go_raw) if go_raw else -11
+        gap_extend = int(ge_raw) if ge_raw else -1
+
+        if sub == "1":
+            a1, a2, score = bio.affine_global_alignment(
+                s1, s2, matrix=matrix, gap_open=gap_open, gap_extend=gap_extend)
+            label = "AFFINE GLOBAL"
+        elif sub == "2":
+            a1, a2, score = bio.affine_local_alignment(
+                s1, s2, matrix=matrix, gap_open=gap_open, gap_extend=gap_extend)
+            label = "AFFINE LOCAL"
+        else:
+            a1, a2, score = bio.linear_space_alignment(
+                s1, s2, matrix=matrix, gap_open=gap_open, gap_extend=gap_extend)
+            label = "HIRSCHBERG"
+
+        mid = "".join("|" if a1[k] == a2[k] and a1[k] != "-" else " " for k in range(len(a1)))
+        print(f"\n{label}  [matrix={mat_label}  go={gap_open}  ge={gap_extend}]  score={score}")
+        print(f"  S1: {a1}")
+        print(f"      {mid}")
+        print(f"  S2: {a2}")
+
+    elif sub == "4":
+        seqs:   list[str] = []
+        labels: list[str] = []
+        print("Enter sequences as  label:SEQUENCE  (empty line to stop):")
+        while True:
+            line = input().strip()
+            if not line:
+                break
+            if ":" in line:
+                lab, seq = line.split(":", 1)
+                labels.append(lab.strip())
+                seqs.append(seq.strip().upper())
+            else:
+                seqs.append(line.upper())
+                labels.append(f"seq{len(seqs)}")
+        if len(seqs) < 2:
+            raise ValueError("Need at least 2 sequences.")
+
+        print("  Matrix:  1) BLOSUM62  2) PAM250  3) None (flat)")
+        mc = input("  Choice (default 1): ").strip()
+        mat_map = {"1": "BLOSUM62", "2": "PAM250"}
+        matrix = bio.SUBSTITUTION_MATRICES.get(mat_map.get(mc, "BLOSUM62"))
+
+        go_raw = input("Gap open   (default -11): ").strip()
+        ge_raw = input("Gap extend (default  -1): ").strip()
+        gap_open   = int(go_raw) if go_raw else -11
+        gap_extend = int(ge_raw) if ge_raw else -1
+
+        aligned, sp, guide_tree = bio.multiple_sequence_alignment(
+            seqs, labels=labels, matrix=matrix,
+            gap_open=gap_open, gap_extend=gap_extend,
+        )
+
+        max_lbl = max(len(l) for l in labels)
+        print(f"\nProgressive MSA  (SP score={sp}):")
+        for lab, s in zip(labels, aligned):
+            print(f"  {lab:<{max_lbl}}  {s}")
+        print(f"\nGuide tree: {guide_tree}")
+
+    elif sub == "5":
+        print("Enter DNA sequence (A/C/G/T):")
+        seq = input().strip().upper()
+        if not seq:
+            raise ValueError("Empty sequence.")
+        min_p = _read_int("Min period (default 1)", 1)
+        max_p = _read_int("Max period (default 500)", 500)
+        min_c_raw = input("Min copies (default 1.5): ").strip()
+        min_c = float(min_c_raw) if min_c_raw else 1.5
+
+        repeats = bio.find_tandem_repeats(seq, min_period=min_p, max_period=max_p, min_copies=min_c)
+        if not repeats:
+            print("No tandem repeats found.")
+        else:
+            print(f"\nFound {len(repeats)} tandem repeat(s):")
+            print(f"  {'start':>6}  {'end':>6}  {'len':>5}  {'period':>6}  {'copies':>6}  unit")
+            for r in repeats:
+                print(f"  {r['start']:>6}  {r['end']:>6}  {r['end']-r['start']+1:>5}  "
+                      f"{r['period']:>6}  {r['copies']:>6}  {r['unit']}")
+
+    else:
+        print("Invalid choice.")
+
+
+
 MENU = {
     "1": ("Origin Search      (Cap 1)",   run_cap1),
     "2": ("Motif Search       (Cap 2)",   run_cap2),
@@ -621,6 +731,7 @@ MENU = {
     "8": ("Gene Clustering       (Cap 8)", run_cap8),
     "9": ("Read Mapping / BWT    (Cap 9)", run_cap9),
     "10": ("HMM & Gene Finding   (Cap 10)", run_cap10),
+    "11": ("Advanced Alignment   (Cap 11)", run_cap11),
 }
 
 

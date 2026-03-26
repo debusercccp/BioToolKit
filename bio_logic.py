@@ -1777,3 +1777,712 @@ def find_cpg_islands(sequence: str, min_length: int = 10) -> list[tuple[int, int
         islands.append((start, len(seq) - 1))
 
     return islands
+
+
+# ---------------------------------------------------------------------------
+# CHAPTER 11 — Advanced sequence alignment
+# ---------------------------------------------------------------------------
+#
+# Algorithms covered:
+#   - affine_global_alignment   (Needleman-Wunsch with affine gap penalty)
+#   - affine_local_alignment    (Smith-Waterman with affine gap penalty)
+#   - linear_space_alignment    (Hirschberg divide-and-conquer, O(n) space)
+#   - multiple_sequence_alignment (centre-star heuristic, k sequences)
+#
+# Gap penalty model (affine)
+# --------------------------
+#   penalty for a gap of length L = gap_open + gap_extend * L
+#   gap_open   : cost to open  a new gap   (e.g. -11)
+#   gap_extend : cost per residue in a gap (e.g.  -1)
+# ---------------------------------------------------------------------------
+
+
+def affine_global_alignment(
+    s1: str,
+    s2: str,
+    matrix: "SubMatrix | None" = None,
+    match: int = 1,
+    mismatch: int = -1,
+    gap_open: int = -11,
+    gap_extend: int = -1,
+) -> tuple[str, str, int]:
+    """
+    Needleman-Wunsch with affine gap penalty (3-matrix DP).
+
+    Three DP matrices:
+        M[i][j] — best score ending with a match/mismatch
+        X[i][j] — best score ending with a gap in s2 (deletion in s1)
+        Y[i][j] — best score ending with a gap in s1 (insertion in s1)
+
+    Args:
+        gap_open:   penalty to open a gap (negative).
+        gap_extend: penalty per gap character (negative).
+
+    Returns:
+        (aligned_s1, aligned_s2, score)
+    """
+    m, n = len(s1), len(s2)
+    NEG = float("-inf")
+
+    # Initialise DP matrices
+    M = [[NEG] * (n + 1) for _ in range(m + 1)]
+    X = [[NEG] * (n + 1) for _ in range(m + 1)]
+    Y = [[NEG] * (n + 1) for _ in range(m + 1)]
+    M[0][0] = 0
+    for i in range(1, m + 1):
+        X[i][0] = gap_open + gap_extend * i
+    for j in range(1, n + 1):
+        Y[0][j] = gap_open + gap_extend * j
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            sub = _sub(matrix, s1[i - 1], s2[j - 1], match, mismatch)
+            M[i][j] = max(
+                M[i-1][j-1] + sub,
+                X[i-1][j-1] + sub,
+                Y[i-1][j-1] + sub,
+            )
+            X[i][j] = max(
+                M[i-1][j] + gap_open + gap_extend,
+                X[i-1][j] + gap_extend,
+            )
+            Y[i][j] = max(
+                M[i][j-1] + gap_open + gap_extend,
+                Y[i][j-1] + gap_extend,
+            )
+
+    score = max(M[m][n], X[m][n], Y[m][n])
+
+    # Traceback
+    a1: list[str] = []
+    a2: list[str] = []
+    i, j = m, n
+    # Determine which matrix we end in
+    state = max(("M", M[m][n]), ("X", X[m][n]), ("Y", Y[m][n]), key=lambda t: t[1])[0]
+
+    while i > 0 or j > 0:
+        if state == "M":
+            sub = _sub(matrix, s1[i-1], s2[j-1], match, mismatch)
+            if i > 0 and j > 0 and M[i][j] == M[i-1][j-1] + sub:
+                a1.append(s1[i-1]); a2.append(s2[j-1]); i -= 1; j -= 1
+            elif i > 0 and j > 0 and M[i][j] == X[i-1][j-1] + sub:
+                a1.append(s1[i-1]); a2.append(s2[j-1]); i -= 1; j -= 1; state = "X"
+            else:
+                a1.append(s1[i-1]); a2.append(s2[j-1]); i -= 1; j -= 1; state = "Y"
+        elif state == "X":
+            if i > 0 and X[i][j] == M[i-1][j] + gap_open + gap_extend:
+                a1.append(s1[i-1]); a2.append("-"); i -= 1; state = "M"
+            elif i > 0:
+                a1.append(s1[i-1]); a2.append("-"); i -= 1
+            else:
+                a2.append(s2[j-1]); a1.append("-"); j -= 1; state = "Y"
+        else:  # Y
+            if j > 0 and Y[i][j] == M[i][j-1] + gap_open + gap_extend:
+                a2.append(s2[j-1]); a1.append("-"); j -= 1; state = "M"
+            elif j > 0:
+                a2.append(s2[j-1]); a1.append("-"); j -= 1
+            else:
+                a1.append(s1[i-1]); a2.append("-"); i -= 1; state = "X"
+
+    return "".join(reversed(a1)), "".join(reversed(a2)), score
+
+
+def affine_local_alignment(
+    s1: str,
+    s2: str,
+    matrix: "SubMatrix | None" = None,
+    match: int = 1,
+    mismatch: int = -1,
+    gap_open: int = -11,
+    gap_extend: int = -1,
+) -> tuple[str, str, int]:
+    """
+    Smith-Waterman with affine gap penalty.
+
+    Returns:
+        (aligned_s1, aligned_s2, score)
+    """
+    m, n = len(s1), len(s2)
+    NEG = float("-inf")
+
+    M = [[0.0] * (n + 1) for _ in range(m + 1)]
+    X = [[NEG]  * (n + 1) for _ in range(m + 1)]
+    Y = [[NEG]  * (n + 1) for _ in range(m + 1)]
+
+    best_score = 0.0
+    best_pos   = (0, 0)
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            sub = _sub(matrix, s1[i-1], s2[j-1], match, mismatch)
+            M[i][j] = max(
+                0,
+                M[i-1][j-1] + sub,
+                X[i-1][j-1] + sub,
+                Y[i-1][j-1] + sub,
+            )
+            X[i][j] = max(
+                M[i-1][j] + gap_open + gap_extend,
+                X[i-1][j] + gap_extend,
+            )
+            Y[i][j] = max(
+                M[i][j-1] + gap_open + gap_extend,
+                Y[i][j-1] + gap_extend,
+            )
+            if M[i][j] >= best_score:
+                best_score = M[i][j]
+                best_pos   = (i, j)
+
+    # Traceback from best cell until M == 0
+    a1: list[str] = []
+    a2: list[str] = []
+    i, j = best_pos
+    while i > 0 and j > 0 and M[i][j] > 0:
+        sub = _sub(matrix, s1[i-1], s2[j-1], match, mismatch)
+        if M[i][j] == M[i-1][j-1] + sub or M[i][j] == X[i-1][j-1] + sub or M[i][j] == Y[i-1][j-1] + sub:
+            a1.append(s1[i-1]); a2.append(s2[j-1]); i -= 1; j -= 1
+        elif X[i][j] >= Y[i][j]:
+            a1.append(s1[i-1]); a2.append("-"); i -= 1
+        else:
+            a2.append(s2[j-1]); a1.append("-"); j -= 1
+
+    return "".join(reversed(a1)), "".join(reversed(a2)), int(best_score)
+
+
+def _nw_score_row(
+    s1: str,
+    s2: str,
+    matrix: "SubMatrix | None",
+    match: int,
+    mismatch: int,
+    gap_open: int,
+    gap_extend: int,
+) -> list[int]:
+    """
+    Return only the last row of the NW affine score matrix (O(n) space).
+    Used internally by linear_space_alignment.
+    """
+    n = len(s2)
+    NEG = float("-inf")
+
+    prev_M = [NEG] * (n + 1)
+    prev_X = [NEG] * (n + 1)
+    prev_Y = [NEG] * (n + 1)
+    prev_M[0] = 0
+    for j in range(1, n + 1):
+        prev_Y[j] = gap_open + gap_extend * j
+
+    for i in range(1, len(s1) + 1):
+        cur_M = [NEG] * (n + 1)
+        cur_X = [NEG] * (n + 1)
+        cur_Y = [NEG] * (n + 1)
+        cur_X[0] = gap_open + gap_extend * i
+        for j in range(1, n + 1):
+            sub = _sub(matrix, s1[i-1], s2[j-1], match, mismatch)
+            cur_M[j] = max(prev_M[j-1] + sub, prev_X[j-1] + sub, prev_Y[j-1] + sub)
+            cur_X[j] = max(prev_M[j] + gap_open + gap_extend, prev_X[j] + gap_extend)
+            cur_Y[j] = max(cur_M[j-1] + gap_open + gap_extend, cur_Y[j-1] + gap_extend)
+        prev_M, prev_X, prev_Y = cur_M, cur_X, cur_Y
+
+    return [max(prev_M[j], prev_X[j], prev_Y[j]) for j in range(n + 1)]
+
+
+def linear_space_alignment(
+    s1: str,
+    s2: str,
+    matrix: "SubMatrix | None" = None,
+    match: int = 1,
+    mismatch: int = -1,
+    gap_open: int = -11,
+    gap_extend: int = -1,
+) -> tuple[str, str, int]:
+    """
+    Hirschberg divide-and-conquer alignment in O(n) space.
+
+    Computes the same optimal global alignment as affine_global_alignment
+    but uses O(min(m,n)) memory instead of O(m·n) by recursively splitting
+    the problem at the middle row and finding the optimal column split via
+    two score-row computations.
+
+    Returns:
+        (aligned_s1, aligned_s2, score)
+    """
+
+    def _rev(s: str) -> str:
+        return s[::-1]
+
+    def _hirschberg(a: str, b: str) -> tuple[str, str]:
+        m, n = len(a), len(b)
+
+        if m == 0:
+            return "-" * n, b
+        if n == 0:
+            return a, "-" * m
+        if m == 1 or n == 1:
+            al, bl, _ = affine_global_alignment(a, b, matrix, match, mismatch, gap_open, gap_extend)
+            return al, bl
+
+        mid = m // 2
+        top_scores = _nw_score_row(a[:mid], b, matrix, match, mismatch, gap_open, gap_extend)
+        bot_scores = _nw_score_row(_rev(a[mid:]), _rev(b), matrix, match, mismatch, gap_open, gap_extend)
+        bot_scores = list(reversed(bot_scores))
+
+        split = max(range(n + 1), key=lambda j: top_scores[j] + bot_scores[j])
+
+        top_a, top_b = _hirschberg(a[:mid],  b[:split])
+        bot_a, bot_b = _hirschberg(a[mid:],  b[split:])
+        return top_a + bot_a, top_b + bot_b
+
+    al, bl = _hirschberg(s1, s2)
+    # Compute score of the resulting alignment
+    score = 0
+    gap_in_1 = False
+    gap_in_2 = False
+    for ca, cb in zip(al, bl):
+        if ca == "-":
+            score += gap_extend if gap_in_1 else gap_open + gap_extend
+            gap_in_1 = True
+            gap_in_2 = False
+        elif cb == "-":
+            score += gap_extend if gap_in_2 else gap_open + gap_extend
+            gap_in_2 = True
+            gap_in_1 = False
+        else:
+            score += _sub(matrix, ca, cb, match, mismatch)
+            gap_in_1 = False
+            gap_in_2 = False
+
+    return al, bl, score
+
+
+def _profile_from_alignment(
+    aligned: list[list[str]],
+    alphabet: list[str],
+) -> list[dict[str, float]]:
+    """
+    Build a position-specific frequency profile from a gapped alignment.
+    Each column maps characters (including '-') to their relative frequency.
+    """
+    n_cols = len(aligned[0])
+    profile: list[dict[str, float]] = []
+    for col in range(n_cols):
+        counts: dict[str, float] = {c: 0.0 for c in alphabet + ["-"]}
+        for row in aligned:
+            counts[row[col]] = counts.get(row[col], 0.0) + 1.0
+        total = len(aligned)
+        profile.append({c: v / total for c, v in counts.items()})
+    return profile
+
+
+def _profile_align(
+    profile: list[dict[str, float]],
+    seq: str,
+    matrix: "SubMatrix | None",
+    match: int,
+    mismatch: int,
+    gap_open: int,
+    gap_extend: int,
+) -> tuple[list[str], str]:
+    """
+    Align a single sequence against a profile using affine gap DP.
+    Score of matching residue r to a profile column = sum over c of freq(c)*sub(c,r).
+    Returns (profile_alignment_cols, aligned_seq) as lists/strings of equal length.
+    """
+    m = len(profile)   # profile length (may include gap columns)
+    n = len(seq)
+    NEG = float("-inf")
+
+    def prof_score(col: int, r: str) -> float:
+        """Expected substitution score between profile column and residue r."""
+        return sum(
+            profile[col].get(c, 0.0) * _sub(matrix, c, r, match, mismatch)
+            for c in profile[col]
+            if c != "-"
+        )
+
+    # DP matrices: rows = profile positions, cols = seq positions
+    M = [[NEG] * (n + 1) for _ in range(m + 1)]
+    X = [[NEG] * (n + 1) for _ in range(m + 1)]
+    Y = [[NEG] * (n + 1) for _ in range(m + 1)]
+    M[0][0] = 0.0
+    for i in range(1, m + 1):
+        X[i][0] = gap_open + gap_extend * i
+    for j in range(1, n + 1):
+        Y[0][j] = gap_open + gap_extend * j
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            sc = prof_score(i - 1, seq[j - 1])
+            M[i][j] = max(M[i-1][j-1] + sc, X[i-1][j-1] + sc, Y[i-1][j-1] + sc)
+            X[i][j] = max(M[i-1][j] + gap_open + gap_extend, X[i-1][j] + gap_extend)
+            Y[i][j] = max(M[i][j-1] + gap_open + gap_extend, Y[i][j-1] + gap_extend)
+
+    # Traceback
+    prof_aln: list[str] = []
+    seq_aln:  list[str] = []
+    i, j = m, n
+    state = max(("M", M[m][n]), ("X", X[m][n]), ("Y", Y[m][n]), key=lambda t: t[1])[0]
+
+    while i > 0 or j > 0:
+        if state == "M" and i > 0 and j > 0:
+            sc = prof_score(i - 1, seq[j - 1])
+            if M[i][j] == M[i-1][j-1] + sc:
+                prof_aln.append(str(i - 1)); seq_aln.append(seq[j - 1]); i -= 1; j -= 1
+            elif M[i][j] == X[i-1][j-1] + sc:
+                prof_aln.append(str(i - 1)); seq_aln.append(seq[j - 1]); i -= 1; j -= 1; state = "X"
+            else:
+                prof_aln.append(str(i - 1)); seq_aln.append(seq[j - 1]); i -= 1; j -= 1; state = "Y"
+        elif state == "X" or (state == "M" and j == 0 and i > 0):
+            if i > 0:
+                prof_aln.append(str(i - 1)); seq_aln.append("-"); i -= 1
+                if i > 0 and X[i][j] != M[i-1][j] + gap_open + gap_extend:
+                    state = "X"
+                else:
+                    state = "M"
+            else:
+                prof_aln.append("-"); seq_aln.append(seq[j - 1]); j -= 1; state = "Y"
+        else:  # Y or i == 0
+            if j > 0:
+                prof_aln.append("-"); seq_aln.append(seq[j - 1]); j -= 1
+                if j > 0 and Y[i][j] != M[i][j-1] + gap_open + gap_extend:
+                    state = "Y"
+                else:
+                    state = "M"
+            else:
+                prof_aln.append(str(i - 1)); seq_aln.append("-"); i -= 1; state = "X"
+
+    prof_aln.reverse()
+    seq_aln.reverse()
+    return prof_aln, "".join(seq_aln)
+
+
+def multiple_sequence_alignment(
+    sequences: list[str],
+    labels: list[str] | None = None,
+    matrix: "SubMatrix | None" = None,
+    match: int = 1,
+    mismatch: int = -1,
+    gap_open: int = -11,
+    gap_extend: int = -1,
+) -> tuple[list[str], int, list[str]]:
+    """
+    Progressive Multiple Sequence Alignment (ClustalW-style).
+
+    Algorithm (Feng & Doolittle 1987):
+        1. Compute all pairwise affine global alignment scores.
+        2. Convert scores to distances; build a guide tree via UPGMA.
+        3. Follow the guide tree: align sequences / profiles progressively,
+           always merging the two closest un-merged groups first.
+        4. When merging two groups, align their consensus profiles with
+           affine gap DP, then propagate gaps to all member sequences.
+
+    Args:
+        sequences: list of k un-gapped strings.
+        labels:    optional sequence names (defaults to seq0, seq1, …).
+        matrix, match, mismatch, gap_open, gap_extend: scoring parameters.
+
+    Returns:
+        (aligned_sequences, sp_score, guide_tree_newick) where
+          aligned_sequences — list of equal-length gapped strings
+          sp_score          — sum-of-pairs score (non-gap columns only)
+          guide_tree_newick — Newick string of the guide tree used
+    """
+    k = len(sequences)
+    if k < 2:
+        raise ValueError("Need at least 2 sequences for MSA.")
+    if any(not s for s in sequences):
+        raise ValueError("All sequences must be non-empty.")
+
+    lbl = labels if labels else [f"seq{i}" for i in range(k)]
+    if len(lbl) != k:
+        raise ValueError("len(labels) must equal len(sequences).")
+
+    alphabet = sorted(set("".join(sequences)))
+
+    # ---- 1. All-pairs affine alignment scores ----
+    raw_scores = [[0.0] * k for _ in range(k)]
+    for i in range(k):
+        for j in range(i + 1, k):
+            _, _, sc = affine_global_alignment(
+                sequences[i], sequences[j], matrix, match, mismatch, gap_open, gap_extend
+            )
+            raw_scores[i][j] = sc
+            raw_scores[j][i] = sc
+
+    # ---- 2. Convert to distances (Kimura 1980 approximation) ----
+    # distance = -log(identity); we use a simple 1 - normalised_score proxy
+    self_scores = [
+        affine_global_alignment(s, s, matrix, match, mismatch, gap_open, gap_extend)[2]
+        for s in sequences
+    ]
+    dist = [[0.0] * k for _ in range(k)]
+    for i in range(k):
+        for j in range(i + 1, k):
+            denom = (self_scores[i] + self_scores[j]) / 2.0
+            identity = raw_scores[i][j] / denom if denom > 0 else 0.0
+            identity = max(0.001, min(identity, 0.999))
+            d = -_math.log(identity)
+            dist[i][j] = d
+            dist[j][i] = d
+
+    # ---- 3. Guide tree via UPGMA ----
+    _, upgma_edges = upgma(dist, lbl)
+
+    # Build adjacency dict for newick serialisation
+    tree_adj: dict[int, dict[int, float]] = {}
+    for u, v, w in upgma_edges:
+        tree_adj.setdefault(u, {})[v] = w
+        tree_adj.setdefault(v, {})[u] = w
+    guide_newick = newick(tree_adj, lbl)
+
+    # ---- 4. Progressive alignment following UPGMA merge order ----
+    # Each cluster = list of gapped sequence strings (equal length within cluster)
+    clusters: dict[int, list[str]]      = {i: [sequences[i]] for i in range(k)}
+    clus_lbl: dict[int, list[str]]      = {i: [lbl[i]]       for i in range(k)}
+
+    # Reconstruct merge order from UPGMA edges
+    children_of: dict[int, list[int]] = {}
+    for parent, child, _ in upgma_edges:
+        children_of.setdefault(parent, []).append(child)
+
+    # node_to_clus: maps UPGMA node id → current cluster id
+    node_to_clus: dict[int, int] = {i: i for i in range(k)}
+    next_id = k
+
+    def _gapless(s: str) -> str:
+        return s.replace("-", "")
+
+    def _merge_two(rows_a: list[str], rows_b: list[str]) -> list[str]:
+        """
+        Merge two groups by aligning each sequence of B against the
+        consensus of A, propagating induced gaps to all rows of A.
+        """
+        # Consensus of A (plurality vote per column)
+        aln_a = list(rows_a)
+        col_len = len(aln_a[0])
+
+        for seq_b in rows_b:
+            # Build consensus of current A alignment
+            consensus_a = ""
+            for ci in range(len(aln_a[0])):
+                col = [r[ci] for r in aln_a if r[ci] != "-"]
+                if col:
+                    consensus_a += max(set(col), key=col.count)
+                else:
+                    consensus_a += "-"
+            consensus_a_clean = _gapless(consensus_a)
+
+            # Align seq_b (gapless) against gapless consensus_a
+            ca, cb, _ = affine_global_alignment(
+                consensus_a_clean, _gapless(seq_b),
+                matrix, match, mismatch, gap_open, gap_extend,
+            )
+
+            # Map ca back to original (gapped) consensus_a to find new gap positions
+            new_aln_a: list[list[str]] = [[] for _ in aln_a]
+            new_seq_b: list[str] = []
+
+            cons_ptr = 0  # pointer into consensus_a_clean
+            ca_ptr   = 0  # pointer into ca
+            cb_ptr   = 0  # pointer into cb
+
+            # Walk through the alignment output
+            for ca_c, cb_c in zip(ca, cb):
+                if ca_c == "-":
+                    # Gap inserted in A side — propagate to all A rows
+                    for row in new_aln_a:
+                        row.append("-")
+                    new_seq_b.append(cb_c)
+                else:
+                    # Advance through original gapped A to find next non-gap column
+                    # Find which gapped-A column corresponds to cons_ptr-th non-gap
+                    gap_col = 0
+                    seen = 0
+                    for gci in range(len(aln_a[0])):
+                        col_chars = [r[gci] for r in aln_a]
+                        is_all_gap = all(c == "-" for c in col_chars)
+                        if is_all_gap:
+                            for ri, row in enumerate(new_aln_a):
+                                row.append(aln_a[ri][gci])
+                            continue
+                        if seen == cons_ptr:
+                            gap_col = gci
+                            break
+                        seen += 1
+
+                    for ri, row in enumerate(new_aln_a):
+                        row.append(aln_a[ri][gap_col])
+
+                    new_seq_b.append(cb_c if cb_c != "-" else "-")
+                    cons_ptr += 1
+
+            # Pad to equal length
+            max_l = max(max(len(r) for r in new_aln_a), len(new_seq_b))
+            for row in new_aln_a:
+                row.extend(["-"] * (max_l - len(row)))
+            new_seq_b.extend(["-"] * (max_l - len(new_seq_b)))
+
+            aln_a = ["".join(r) for r in new_aln_a]
+            aln_a.append("".join(new_seq_b))
+
+        return aln_a
+
+    for parent in sorted(children_of):
+        ch = children_of[parent]
+        if len(ch) != 2:
+            continue
+        a_node, b_node = ch[0], ch[1]
+        ca_id = node_to_clus.get(a_node, a_node)
+        cb_id = node_to_clus.get(b_node, b_node)
+        if ca_id not in clusters or cb_id not in clusters:
+            continue
+
+        merged_rows = _merge_two(clusters[ca_id], clusters[cb_id])
+        merged_lbl  = clus_lbl[ca_id] + clus_lbl[cb_id]
+
+        clusters[next_id] = merged_rows
+        clus_lbl[next_id] = merged_lbl
+        node_to_clus[parent] = next_id
+        del clusters[ca_id], clusters[cb_id]
+        del clus_lbl[ca_id], clus_lbl[cb_id]
+        next_id += 1
+
+    final_rows = list(clusters.values())[0]
+    final_lbl  = list(clus_lbl.values())[0]
+
+    # Re-order to match input order
+    result = [""] * k
+    for row, lab in zip(final_rows, final_lbl):
+        result[lbl.index(lab)] = row
+
+    max_len = max(len(s) for s in result)
+    result = [s + "-" * (max_len - len(s)) for s in result]
+
+    # Sum-of-pairs score
+    sp_score = 0
+    for col in range(max_len):
+        for i in range(k):
+            for j in range(i + 1, k):
+                ci2, cj2 = result[i][col], result[j][col]
+                if ci2 != "-" and cj2 != "-":
+                    sp_score += _sub(matrix, ci2, cj2, match, mismatch)
+
+    return result, sp_score, guide_newick
+
+
+# ---- Tandem Repeats Finder -------------------------------------------------
+
+def find_tandem_repeats(
+    sequence: str,
+    min_period: int = 1,
+    max_period: int = 500,
+    min_copies: float = 1.5,
+    match_score: int = 2,
+    mismatch_score: int = -7,
+    indel_score: int = -7,
+) -> list[dict]:
+    """
+    Tandem Repeats Finder — detect adjacent repetitions in a DNA sequence.
+
+    A tandem repeat is a region of the form  (unit)^n  where *unit* is the
+    repeated motif and n ≥ min_copies.
+
+    Algorithm (simplified Benson 1999 approach):
+        For each candidate period p (1 … max_period):
+            Align the sequence against a shifted copy of itself (shift = p).
+            High-scoring windows on the diagonal indicate tandem repeats of
+            period p.  Candidate regions are scored using a match/mismatch
+            scheme; overlapping candidates of the same period are merged.
+
+    Args:
+        sequence:       DNA string (A/C/G/T).
+        min_period:     minimum repeat unit length (bp).
+        max_period:     maximum repeat unit length (bp).
+        min_copies:     minimum number of copies (e.g. 1.5 = at least 1.5×unit).
+        match_score:    score for matching bases (+2 typical).
+        mismatch_score: penalty for mismatches (−7 typical).
+        indel_score:    penalty for indels     (−7 typical).
+
+    Returns:
+        List of dicts, each with keys:
+            start      — 0-based start position
+            end        — 0-based end position (inclusive)
+            period     — repeat unit length
+            copies     — estimated number of copies (float)
+            unit       — consensus repeat unit
+            score      — alignment score of the repeat region
+    """
+    seq = sequence.upper()
+    n = len(seq)
+    invalid = set(seq) - set("ACGT")
+    if invalid:
+        raise ValueError(f"Sequence contains invalid characters: {invalid}")
+    if min_period < 1:
+        raise ValueError("min_period must be ≥ 1.")
+    if max_period < min_period:
+        raise ValueError("max_period must be ≥ min_period.")
+
+    results: list[dict] = []
+
+    for period in range(min_period, min(max_period, n // 2) + 1):
+        # Compute diagonal alignment scores for this shift
+        # score[i] = cumulative score of matching seq[i] vs seq[i - period]
+        scores = [0] * (n + 1)
+        for i in range(period, n):
+            s = match_score if seq[i] == seq[i - period] else mismatch_score
+            scores[i + 1] = max(0, scores[i] + s)
+
+        # Extract high-scoring windows: a region is a repeat if its score
+        # exceeds min_copies * period * match_score / 2 (heuristic threshold)
+        threshold = min_copies * period * match_score * 0.5
+
+        i = period
+        while i < n:
+            if scores[i + 1] >= threshold:
+                # Walk forward to find the end of the high-scoring region
+                start = i - period
+                end   = i
+                while end < n - 1 and scores[end + 1] > 0:
+                    end += 1
+
+                # Extend start backwards as long as score stays positive
+                while start > 0 and scores[start] > 0:
+                    start -= 1
+
+                region_len = end - start + 1
+                copies     = region_len / period
+
+                if copies >= min_copies:
+                    # Consensus unit: most frequent base at each position mod period
+                    unit_chars: list[list[str]] = [[] for _ in range(period)]
+                    for pos in range(start, end + 1):
+                        unit_chars[pos % period].append(seq[pos])
+                    unit = "".join(
+                        max(set(col), key=col.count) if col else "N"
+                        for col in unit_chars
+                    )
+
+                    results.append({
+                        "start":  start,
+                        "end":    end,
+                        "period": period,
+                        "copies": round(copies, 2),
+                        "unit":   unit,
+                        "score":  int(scores[end + 1]),
+                    })
+
+                i = end + 1
+            else:
+                i += 1
+
+    # Remove duplicates and sub-regions: keep highest-score hit per region
+    results.sort(key=lambda r: (r["start"], -(r["end"] - r["start"])))
+    merged: list[dict] = []
+    for r in results:
+        if merged and r["start"] <= merged[-1]["end"] and r["period"] == merged[-1]["period"]:
+            if r["score"] > merged[-1]["score"]:
+                merged[-1] = r
+        else:
+            merged.append(r)
+
+    return merged
