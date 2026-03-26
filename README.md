@@ -16,9 +16,30 @@ Dipendenze: `numpy` (cap 7–8).  Tutto il resto usa solo la standard library.
 ```
 bio_logic.py   — algoritmi puri, nessun I/O
 main.py        — menu interattivo, un handler per capitolo
+shell.nix      — Configurazione dell'ambiente di sviluppo riproducibile.
 ```
 
 ---
+
+## Utilizzo
+
+Utilizzo Standard (Linux/macOS/Windows)
+
+Assicurati di avere numpy installato:
+
+```
+pip install numpy
+python3 main.py
+```
+
+Utilizzo con Nix (NixOS o sistemi con Nix)
+
+Il repository include uno shell.nix per caricare un ambiente isolato con tutte le dipendenze (Python 3.12, NumPy, Matplotlib):
+
+```
+nix-shell
+python main.py
+```
 
 ## Capitolo 1 — Origin Search (`run_cap1`)
 
