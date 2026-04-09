@@ -33,21 +33,30 @@ python main.py
 
 ---
 
-## BioCLI
+# BioCLI
 
 Raccolta di tool a riga di comando per operazioni bioinformatiche comuni.
 Ogni script è autonomo, accetta input da file o da stringa diretta, ed è ottimizzato per girare su hardware limitato (Raspberry Pi).
 
+Dipendenze:
 ```
-pip install -r requirements.txt              # nella diretory bioCli
+pip install biopython requests rich
 ```
+
+---
+
+## Struttura
 
 ```
 bioCli/
 │
+├── bioPipeLine.py     — creatore interattivo di pipeline (Rich TUI)
+├── pipelines.json     — pipeline salvate (generato automaticamente)
+├── requirements.txt
+│
 ├── sequence/          # operazioni base su sequenze
-│   ├── baseCount.py       — frequenza tetranucleotidica
-│   ├── dnaToRna.py        — trascrizione DNA → RNA (supporto file multipli, .gz)
+│   ├── baseCount.py       — frequenza tetranucleotidica (A C G T)
+│   ├── dnaToRna.py        — trascrizione DNA → RNA (file multipli, output dir)
 │   ├── rnaToProt.py       — traduzione RNA/DNA → proteine (FASTA multi-record)
 │   ├── revComp.py         — complemento inverso Watson-Crick
 │   ├── gcContent.py       — percentuale GC, record con GC massimo da FASTA
@@ -62,8 +71,8 @@ bioCli/
 ├── assembly/          # assembly e struttura genomica
 │   ├── genAsmb.py         — grafo di overlap da FASTA (k-mer condivisi)
 │   ├── longestSharedSeq.py — sottostringa comune più lunga tra sequenze FASTA
-│   ├── orfFinder.py       — Open Reading Frame su sequenza e suo RC (3+3 frame)
-│   └── hwMnySeq.py        — quante mRNA possibili per una proteina (modulo 10⁶)
+│   ├── orfFinder.py       — Open Reading Frame su sequenza e RC (6 frame)
+│   └── hwMnySeq.py        — numero di mRNA possibili per una proteina (mod 10⁶)
 │
 ├── io/                # input/output, formato, campionamento
 │   ├── fastxSampler.py    — subset probabilistico FASTA/Q (supporto .gz, directory)
@@ -79,11 +88,65 @@ bioCli/
     └── fetch_fasta.sh     — fetch batch di ID UniProt
 ```
 
-### Note comuni a tutti gli script
+---
+
+## Note comuni a tutti gli script
+
 - Input **case-insensitive**: le sequenze vengono normalizzate a uppercase internamente.
 - Ogni script accetta sia una **sequenza diretta** da CLI che un **file** come argomento positivo.
 - `-h` / `--help` disponibile su tutti.
 
+---
+
+## bioPipeLine.py
+
+Creatore interattivo di pipeline che concatena gli script BioCLI.
+
+```
+python3 bioPipeLine.py
+```
+
+Funzionalità:
+
+- **Nuova pipeline** — aggiungi step scegliendo dal catalogo; prompt guidati per ogni parametro, preview ad albero in tempo reale
+- **Esegui pipeline** — lancia ogni step con `subprocess`, mostra il comando esatto e il tempo di esecuzione; validazione pre-esecuzione (script mancanti, argomenti obbligatori vuoti)
+- **Ispeziona** — mostra la pipeline e i comandi bash che verrebbero generati
+- **Esporta bash** — genera un `.sh` eseguibile pronto per cron o CI
+- **Salvataggio** — le pipeline vengono salvate in `pipelines.json`
+
+Il percorso BioCLI viene rilevato automaticamente dalla posizione dello script.
+
+Esempio di pipeline:
+
+```
+fastxSampler → gcContent → grepFastx → orfFinder
+(subsample)    (filtra GC)  (filtra header)  (trova ORF)
+```
+
+---
+
+## Script di riferimento rapido
+
+| Script | Input | Output |
+|--------|-------|--------|
+| `baseCount.py SEQ` | sequenza o file | `A C G T` |
+| `dnaToRna.py FILE [-s SEQ] [-o DIR]` | file FASTA o stringa | file RNA in `-o` |
+| `rnaToProt.py INPUT` | sequenza o FASTA multi-record | proteine su stdout |
+| `revComp.py SEQ` | sequenza o file | complemento inverso |
+| `gcContent.py [FILE] [-s SEQ]` | FASTA o stringa | % GC o record max |
+| `hammDist.py SEQ1 SEQ2` | due sequenze | distanza di Hamming |
+| `motifFind.py SEQ SUBSEQ` | due sequenze | posizioni (1-based) |
+| `nGlicMotif.py INPUT [-d DIR]` | AA / UniProt ID / file ID | posizioni motivo |
+| `grepFastx.py PATTERN FILE` | regex + FASTA/Q | record matchati |
+| `recSite.py FILE` | FASTA | posizione e lunghezza palindromi |
+| `genAsmb.py FILE [-k K]` | FASTA | coppie overlap |
+| `longestSharedSeq.py FILE` | FASTA multi-record | sottostringa comune |
+| `orfFinder.py FILE` | FASTA | ORF su 6 frame |
+| `hwMnySeq.py PROT [-m MOD]` | proteina o file | numero mRNA mod 10⁶ |
+| `fastxSampler.py FILE [-p P] [-m N]` | file/directory, anche `.gz` | FASTA campionato |
+| `seqMagique.py FILE [FILE ...]` | uno o più FASTA | tabella statistiche Rich |
+| `blastOutput.py -b BLAST -a ANN` | BLAST outfmt6 + CSV | CSV annotato |
+| `synthSeq.py FILE [-n N] [-k K]` | FASTA training | FASTA sintetico |
 ---
 
 ## Capitolo 1 — Origin Search (`run_cap1`)
