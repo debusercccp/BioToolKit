@@ -40,7 +40,7 @@ Ogni script è autonomo, accetta input da file o da stringa diretta, ed è ottim
 
 Dipendenze:
 ```
-pip install biopython requests rich
+pip install -r requirements.txt
 ```
 
 ---
@@ -122,7 +122,6 @@ Esempio di pipeline:
 fastxSampler → gcContent → grepFastx → orfFinder
 (subsample)    (filtra GC)  (filtra header)  (trova ORF)
 ```
-
 ---
 
 ## Script di riferimento rapido
