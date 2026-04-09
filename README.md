@@ -38,14 +38,12 @@ python main.py
 Raccolta di tool a riga di comando per operazioni bioinformatiche comuni.
 Ogni script è autonomo, accetta input da file o da stringa diretta, ed è ottimizzato per girare su hardware limitato (Raspberry Pi).
 
-Dipendenze: `biopython`, `requests`, `rich`.
-
 ```
-pip install biopython requests rich
+pip install -r requirements.txt              # nella diretory bioCli
 ```
 
 ```
-BioInf/
+bioCli/
 │
 ├── sequence/          # operazioni base su sequenze
 │   ├── baseCount.py       — frequenza tetranucleotidica
