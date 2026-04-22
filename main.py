@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """
 main.py — CLI entry point for BioToolkit.
 
