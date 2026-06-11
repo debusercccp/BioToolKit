@@ -4,7 +4,7 @@ Implementazione didattica degli algoritmi del libro
 ```
 python3 main.py
 ```
-Dipendenze: `numpy` (cap 7–8).  Tutto il resto usa solo la standard library.
+Dipendenze: `numpy` (solo cap 7 — UPGMA e Neighbor Joining).  Tutto il resto usa solo la standard library.
 
 ---
 

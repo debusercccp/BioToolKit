@@ -590,7 +590,22 @@ def count_breakpoints(p: list[int]) -> int:
 # Leaves are labelled 0 … n-1; internal nodes start at n.
 # ---------------------------------------------------------------------------
 
-import numpy as np
+def _require_numpy():
+    """Import numpy on demand.
+
+    Only the distance-matrix algorithms below (UPGMA, Neighbor Joining) need
+    numpy.  Keeping the import lazy lets every other chapter run on the
+    standard library alone, as the README promises.
+    """
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise ImportError(
+            "Chapter 7 (UPGMA / Neighbor Joining) requires numpy — "
+            "install it with `pip install numpy`."
+        ) from exc
+    return np
+
 
 # Type alias used throughout this chapter.
 Tree = dict[int, dict[int, float]]
@@ -646,6 +661,7 @@ def upgma(
     if len(distance_matrix) != n or any(len(r) != n for r in distance_matrix):
         raise ValueError("distance_matrix dimensions must match len(labels).")
 
+    np = _require_numpy()
     mat = np.array(distance_matrix, dtype=float)
     np.fill_diagonal(mat, np.inf)   # ignore self-distances
 
@@ -737,6 +753,7 @@ def neighbor_joining(
     if len(distance_matrix) != n or any(len(r) != n for r in distance_matrix):
         raise ValueError("distance_matrix dimensions must match len(labels).")
 
+    np = _require_numpy()
     mat = np.array(distance_matrix, dtype=float)
     active = list(range(n))
     tree: Tree = {i: {} for i in range(n)}
@@ -1933,18 +1950,36 @@ def affine_local_alignment(
                 best_score = M[i][j]
                 best_pos   = (i, j)
 
-    # Traceback from best cell until M == 0
+    # Traceback from the best M cell, tracking which DP matrix we are in
+    # (M, X, or Y) so that gap runs are reconstructed.  Stops on reaching an
+    # M cell with value 0 — the start of the optimal local alignment.
     a1: list[str] = []
     a2: list[str] = []
     i, j = best_pos
-    while i > 0 and j > 0 and M[i][j] > 0:
-        sub = _sub(matrix, s1[i-1], s2[j-1], match, mismatch)
-        if M[i][j] == M[i-1][j-1] + sub or M[i][j] == X[i-1][j-1] + sub or M[i][j] == Y[i-1][j-1] + sub:
-            a1.append(s1[i-1]); a2.append(s2[j-1]); i -= 1; j -= 1
-        elif X[i][j] >= Y[i][j]:
-            a1.append(s1[i-1]); a2.append("-"); i -= 1
-        else:
-            a2.append(s2[j-1]); a1.append("-"); j -= 1
+    state = "M"
+    while True:
+        if state == "M":
+            if i == 0 or j == 0 or M[i][j] == 0:
+                break
+            sub = _sub(matrix, s1[i-1], s2[j-1], match, mismatch)
+            a1.append(s1[i-1]); a2.append(s2[j-1])
+            if M[i][j] == M[i-1][j-1] + sub:
+                pass                       # came from a match/mismatch
+            elif M[i][j] == X[i-1][j-1] + sub:
+                state = "X"                # gap in s2 closed just before
+            else:
+                state = "Y"                # gap in s1 closed just before
+            i -= 1; j -= 1
+        elif state == "X":
+            a1.append(s1[i-1]); a2.append("-")
+            if X[i][j] == M[i-1][j] + gap_open + gap_extend:
+                state = "M"                # this is where the gap opened
+            i -= 1
+        else:  # Y
+            a2.append(s2[j-1]); a1.append("-")
+            if Y[i][j] == M[i][j-1] + gap_open + gap_extend:
+                state = "M"                # this is where the gap opened
+            j -= 1
 
     return "".join(reversed(a1)), "".join(reversed(a2)), int(best_score)
 

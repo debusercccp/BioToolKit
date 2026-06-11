@@ -6,7 +6,7 @@ pkgs.mkShell {
   # Pacchetti necessari per far girare il toolkit
   buildInputs = [
     (pkgs.python3.withPackages (ps: with ps; [
-      numpy        # Necessario per Cap 7-8 (Matrici di distanza e Clustering)
+      numpy        # Necessario solo per Cap 7 (UPGMA / Neighbor Joining su matrici di distanza)
       matplotlib   # Consigliato per visualizzare lo Skew del DNA (Cap 1)
     ]))
   ];
